@@ -1,0 +1,25 @@
+{
+  "name": "welt-studio-plugins",
+  "owner": {
+    "name": "Welt Studio Desenvolvimentos LTDA",
+    "email": "dev@weltstudio.com.br"
+  },
+  "metadata": {
+    "description": "Collection of Claude Code plugins for development by Welt Studio",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "typescript-lsp",
+      "source": "./plugins/typescript-lsp",
+      "description": "TypeScript/JavaScript Language Server integration",
+      "version": "1.0.0"
+    },
+    {
+      "name": "python-lsp",
+      "source": "./plugins/python-lsp",
+      "description": "Python Language Server integration (Pyright)",
+      "version": "1.0.0"
+    }
+  ]
+}

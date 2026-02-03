@@ -1,0 +1,9 @@
+{
+  "name": "typescript-lsp",
+  "description": "TypeScript/JavaScript Language Server integration for Claude Code",
+  "version": "1.0.0",
+  "author": {
+    "name": "Welt Studio Desenvolvimentos LTDA"
+  },
+  "keywords": ["lsp", "typescript", "javascript", "language-server"]
+}
