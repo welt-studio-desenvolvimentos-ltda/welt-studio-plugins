@@ -20,6 +20,12 @@
       "source": "./plugins/python-lsp",
       "description": "Python Language Server integration (Pyright)",
       "version": "1.0.0"
+    },
+    {
+      "name": "hookify",
+      "source": "./plugins/hookify",
+      "description": "User-configurable hooks from .local.md files. Patched: stderr+exit 2 for blocking, read event type, global rules.",
+      "version": "0.1.1"
     }
   ]
 }

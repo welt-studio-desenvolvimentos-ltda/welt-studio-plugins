@@ -8,6 +8,7 @@ A collection of Claude Code plugins for enhanced development experience.
 |--------|-------------|
 | `typescript-lsp` | TypeScript/JavaScript Language Server integration |
 | `python-lsp` | Python Language Server integration (Pyright) |
+| `hookify` | User-configurable hooks from .local.md files (patched) |
 
 ## Installation
 
@@ -29,6 +30,9 @@ A collection of Claude Code plugins for enhanced development experience.
 
 # Install Python LSP
 /plugin install python-lsp@welt-studio-plugins
+
+# Install Hookify (patched)
+/plugin install hookify@welt-studio-plugins
 ```
 
 ## Prerequisites

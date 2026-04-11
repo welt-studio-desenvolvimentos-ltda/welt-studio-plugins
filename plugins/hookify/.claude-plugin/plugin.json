@@ -1,0 +1,14 @@
+{
+  "name": "hookify",
+  "version": "0.1.1",
+  "description": "Easily create hooks to prevent unwanted behaviors by analyzing conversation patterns. Patched: stderr+exit 2 for blocking, read event type, global rules.",
+  "author": {
+    "name": "Welt Studio",
+    "email": "dev@weltstudio.com.br"
+  },
+  "upstream": {
+    "name": "Daisy Hollman (Anthropic)",
+    "repository": "https://github.com/anthropics/claude-code/tree/main/plugins/hookify",
+    "version": "0.1.0"
+  }
+}
