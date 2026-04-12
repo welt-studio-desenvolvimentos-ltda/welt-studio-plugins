@@ -21,7 +21,7 @@ The hookify plugin makes it simple to create hooks without editing complex `hook
 /hookify Warn me when I use rm -rf commands
 ```
 
-This analyzes your request and creates `.claude/hookify.warn-rm.local.md`.
+This analyzes your request and creates a rule file. You'll be asked whether to save it for this project only (`.claude/`) or globally (`~/.claude/`).
 
 ### 2. Test It Immediately
 
@@ -67,6 +67,13 @@ Enable/disable existing rules through an interactive interface.
 ```
 /hookify:help
 ```
+
+## Rule Locations
+
+| Location | Scope | Example |
+|----------|-------|---------|
+| `.claude/hookify.*.local.md` | Current project only | `.claude/hookify.warn-rm.local.md` |
+| `~/.claude/hookify.*.local.md` | All projects (global) | `~/.claude/hookify.warn-rm.local.md` |
 
 ## Rule Configuration Format
 

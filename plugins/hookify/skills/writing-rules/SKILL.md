@@ -8,7 +8,9 @@ version: 0.1.0
 
 ## Overview
 
-Hookify rules are markdown files with YAML frontmatter that define patterns to watch for and messages to show when those patterns match. Rules are stored in `.claude/hookify.{rule-name}.local.md` files.
+Hookify rules are markdown files with YAML frontmatter that define patterns to watch for and messages to show when those patterns match. Rules are stored in:
+- **Project**: `.claude/hookify.{rule-name}.local.md` (current project only)
+- **Global**: `~/.claude/hookify.{rule-name}.local.md` (all projects)
 
 ## Rule File Format
 
@@ -282,9 +284,11 @@ Better: `rm\s+-rf`
 
 ## File Organization
 
-**Location:** All rules in `.claude/` directory
-**Naming:** `.claude/hookify.{descriptive-name}.local.md`
-**Gitignore:** Add `.claude/*.local.md` to `.gitignore`
+**Locations:**
+- Project rules: `.claude/hookify.{descriptive-name}.local.md` (current project only)
+- Global rules: `~/.claude/hookify.{descriptive-name}.local.md` (all projects)
+
+**Gitignore:** Add `.claude/*.local.md` to `.gitignore` for project rules
 
 **Good names:**
 - `hookify.dangerous-rm.local.md`
@@ -305,7 +309,7 @@ Better: `rm\s+-rf`
 2. Determine which tool is involved (Bash, Edit, etc.)
 3. Choose event type (bash, file, stop, etc.)
 4. Write regex pattern
-5. Create `.claude/hookify.{name}.local.md` file in project root
+5. Create rule file in chosen scope: `.claude/` (project) or `~/.claude/` (global)
 6. Test immediately - rules are read dynamically on next tool use
 
 ### Refining a Rule

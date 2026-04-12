@@ -2,7 +2,7 @@
 """PostToolUse hook executor for hookify plugin.
 
 This script is called by Claude Code after a tool executes.
-It reads .claude/hookify.*.local.md files and evaluates rules.
+It reads hookify.*.local.md files from .claude/ and ~/.claude/ and evaluates rules.
 """
 
 import os

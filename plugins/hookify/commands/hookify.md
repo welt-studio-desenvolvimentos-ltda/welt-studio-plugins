@@ -87,7 +87,9 @@ After gathering behaviors (from arguments or agent), present to user using AskUs
 
 ### Step 3: Generate Rule Files
 
-For each confirmed behavior, create a `.claude/hookify.{rule-name}.local.md` file:
+Based on the user's scope choice (Question 2), create rule files in the appropriate location:
+- **Project**: `.claude/hookify.{rule-name}.local.md`
+- **Global**: `~/.claude/hookify.{rule-name}.local.md`
 
 **Rule naming convention:**
 - Use kebab-case
@@ -131,20 +133,22 @@ conditions:
 
 ### Step 4: Create Files and Confirm
 
-**IMPORTANT**: Rule files must be created in the current working directory's `.claude/` folder, NOT the plugin directory.
+**IMPORTANT**: Rule files must be created in the location the user chose in Question 2, NOT the plugin directory.
 
-Use the current working directory (where Claude Code was started) as the base path.
+- **Project scope**: Use `.claude/` in the current working directory
+- **Global scope**: Use `~/.claude/` in the user's home directory
 
-1. Check if `.claude/` directory exists in current working directory
-   - If not, create it first with: `mkdir -p .claude`
+1. Check if the target `.claude/` directory exists
+   - Project: `mkdir -p .claude`
+   - Global: `mkdir -p ~/.claude`
 
-2. Use Write tool to create each `.claude/hookify.{name}.local.md` file
-   - Use relative path from current working directory: `.claude/hookify.{name}.local.md`
-   - The path should resolve to the project's .claude directory, not the plugin's
+2. Use Write tool to create each rule file in the chosen location:
+   - Project: `.claude/hookify.{name}.local.md`
+   - Global: `~/.claude/hookify.{name}.local.md`
 
-3. Show user what was created:
+3. Show user what was created, including the scope:
    ```
-   Created 3 hookify rules:
+   Created 3 hookify rules (project scope):
    - .claude/hookify.dangerous-rm.local.md
    - .claude/hookify.console-log.local.md
    - .claude/hookify.sensitive-files.local.md

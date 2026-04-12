@@ -2,7 +2,7 @@
 """UserPromptSubmit hook executor for hookify plugin.
 
 This script is called by Claude Code when user submits a prompt.
-It reads .claude/hookify.*.local.md files and evaluates rules.
+It reads hookify.*.local.md files from .claude/ and ~/.claude/ and evaluates rules.
 """
 
 import os

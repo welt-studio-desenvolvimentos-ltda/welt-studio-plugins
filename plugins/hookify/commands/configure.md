@@ -13,14 +13,17 @@ Enable or disable existing hookify rules using an interactive interface.
 
 ### 1. Find Existing Rules
 
-Use Glob tool to find all hookify rule files:
+Use Glob tool to find all hookify rule files in **both** locations:
 ```
 pattern: ".claude/hookify.*.local.md"
 ```
-
-If no rules found, inform user:
 ```
-No hookify rules configured yet. Use `/hookify` to create your first rule.
+pattern: "~/.claude/hookify.*.local.md" (expand ~ to home directory)
+```
+
+If no rules found in either location, inform user:
+```
+No hookify rules configured yet (searched .claude/ and ~/.claude/). Use `/hookify` to create your first rule.
 ```
 
 ### 2. Read Current State
@@ -111,7 +114,7 @@ Changes apply immediately - no restart needed
 ## Important Notes
 
 - Changes take effect immediately on next tool use
-- You can also manually edit .claude/hookify.*.local.md files
+- You can also manually edit `.claude/hookify.*.local.md` (project) or `~/.claude/hookify.*.local.md` (global) files
 - To permanently remove a rule, delete its .local.md file
 - Use `/hookify:list` to see all configured rules
 
