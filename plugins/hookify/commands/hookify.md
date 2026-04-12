@@ -68,13 +68,19 @@ After gathering behaviors (from arguments or agent), present to user using AskUs
   - Label: Short description (e.g., "Block rm -rf")
   - Description: Why it's problematic
 
-**Question 2: For each selected behavior, ask about action:**
+**Question 2: Where should the rules be saved?**
+- Header: "Rule Scope"
+- Options:
+  - "This project only" → save in `.claude/hookify.{name}.local.md` (project directory)
+  - "All projects (global)" → save in `~/.claude/hookify.{name}.local.md` (home directory)
+
+**Question 3: For each selected behavior, ask about action:**
 - "Should this block the operation or just warn?"
 - Options:
   - "Just warn" (action: warn - shows message but allows)
   - "Block operation" (action: block - prevents execution)
 
-**Question 3: Ask for example patterns:**
+**Question 4: Ask for example patterns:**
 - "What patterns should trigger this rule?"
 - Show detected patterns
 - Allow user to refine or add more
