@@ -12,15 +12,15 @@ Show all configured hookify rules from both project and global scopes.
 ## Steps
 
 1. Use Glob tool to find hookify rule files in **both** locations:
-   - **Project rules**: `.claude/hookify.*.local.md` (current directory)
-   - **Global rules**: `~/.claude/hookify.*.local.md` (home directory)
+   - **Project rules**: `.claude/hookify/hookify.*.local.md` (current directory)
+   - **Global rules**: `~/.claude/hookify/hookify.*.global.md` (home directory)
 
    Run two Glob searches:
    ```
-   pattern: ".claude/hookify.*.local.md"
+   pattern: ".claude/hookify/hookify.*.local.md"
    ```
    ```
-   pattern: "~/.claude/hookify.*.local.md"
+   pattern: "~/.claude/hookify/hookify.*.global.md"
    path: home directory (use $HOME or expand ~)
    ```
 
@@ -36,12 +36,12 @@ Show all configured hookify rules from both project and global scopes.
 
 | Name | Enabled | Event | Pattern | Scope | File |
 |------|---------|-------|---------|-------|------|
-| warn-dangerous-rm | ✅ Yes | bash | rm\s+-rf | Project | .claude/hookify.dangerous-rm.local.md |
-| warn-console-log | ✅ Yes | file | console\.log\( | Global | ~/.claude/hookify.console-log.local.md |
-| check-tests | ❌ No | stop | .* | Project | .claude/hookify.require-tests.local.md |
+| warn-dangerous-rm | ✅ Yes | bash | rm\s+-rf | Project | .claude/hookify/hookify.dangerous-rm.local.md |
+| warn-console-log | ✅ Yes | file | console\.log\( | Global | ~/.claude/hookify/hookify.console-log.global.md |
+| check-tests | ❌ No | stop | .* | Project | .claude/hookify/hookify.require-tests.local.md |
 
 **Total**: 3 rules (2 enabled, 1 disabled)
-**Searched**: `.claude/` (project) and `~/.claude/` (global)
+**Searched**: `.claude/hookify/` (project) and `~/.claude/hookify/` (global)
 ```
 
 4. For each rule, show a brief preview:
@@ -52,22 +52,22 @@ Show all configured hookify rules from both project and global scopes.
 **Message**: "⚠️ **Dangerous rm command detected!** This command could delete..."
 
 **Status**: ✅ Active
-**File**: .claude/hookify.dangerous-rm.local.md
+**File**: .claude/hookify/hookify.dangerous-rm.local.md
 ```
 
 5. Add helpful footer:
 ```
 ---
 
-To modify a rule: Edit the .local.md file directly
+To modify a rule: Edit the .local.md or .global.md file directly
 To disable a rule: Set `enabled: false` in frontmatter
 To enable a rule: Set `enabled: true` in frontmatter
-To delete a rule: Remove the .local.md file
+To delete a rule: Remove the rule file
 To create a rule: Use `/hookify` command
 
 **Searched locations**:
-- Project: .claude/hookify.*.local.md
-- Global: ~/.claude/hookify.*.local.md
+- Project: .claude/hookify/hookify.*.local.md
+- Global: ~/.claude/hookify/hookify.*.global.md
 
 **Remember**: Changes take effect immediately - no restart needed
 ```
@@ -82,14 +82,14 @@ If no hookify rules exist in **either** location:
 You haven't created any hookify rules yet.
 
 **Searched locations**:
-- Project: .claude/hookify.*.local.md (not found)
-- Global: ~/.claude/hookify.*.local.md (not found)
+- Project: .claude/hookify/hookify.*.local.md (not found)
+- Global: ~/.claude/hookify/hookify.*.global.md (not found)
 
 To get started:
 1. Use `/hookify` to analyze conversation and create rules
 2. Or manually create rule files:
-   - Project-only: `.claude/hookify.<name>.local.md`
-   - All projects: `~/.claude/hookify.<name>.local.md`
+   - Project-only: `.claude/hookify/hookify.<name>.local.md`
+   - All projects: `~/.claude/hookify/hookify.<name>.global.md`
 3. See `/hookify:help` for documentation
 
 Example:

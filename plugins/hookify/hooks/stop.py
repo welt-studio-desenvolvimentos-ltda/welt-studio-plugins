@@ -2,7 +2,7 @@
 """Stop hook executor for hookify plugin.
 
 This script is called by Claude Code when agent wants to stop.
-It reads hookify.*.local.md files from .claude/ and ~/.claude/ and evaluates stop rules.
+It reads hookify.*.local.md from .claude/hookify/ and hookify.*.global.md from ~/.claude/hookify/ and evaluates stop rules.
 """
 
 import os

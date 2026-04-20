@@ -209,15 +209,15 @@ def load_rules(event: Optional[str] = None) -> List[Rule]:
     """
     rules = []
 
-    # Find all hookify.*.local.md files from both project and global .claude
-    search_dirs = [
-        '.claude',
-        os.path.expanduser(os.path.join('~', '.claude')),
+    # Find rule files: project uses .claude/hookify/*.local.md, global uses ~/.claude/hookify/*.global.md
+    search_targets = [
+        ('.claude/hookify', 'hookify.*.local.md'),
+        (os.path.expanduser(os.path.join('~', '.claude', 'hookify')), 'hookify.*.global.md'),
     ]
     files = []
-    for dir_path in search_dirs:
+    for dir_path, pattern in search_targets:
         if os.path.isdir(dir_path):
-            files.extend(glob.glob(os.path.join(dir_path, 'hookify.*.local.md')))
+            files.extend(glob.glob(os.path.join(dir_path, pattern)))
 
     for file_path in files:
         try:

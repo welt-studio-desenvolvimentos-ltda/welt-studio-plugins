@@ -2,7 +2,7 @@
 """PreToolUse hook executor for hookify plugin.
 
 This script is called by Claude Code before any tool executes.
-It reads hookify.*.local.md files from .claude/ and ~/.claude/ and evaluates rules.
+It reads hookify.*.local.md from .claude/hookify/ and hookify.*.global.md from ~/.claude/hookify/ and evaluates rules.
 """
 
 import os

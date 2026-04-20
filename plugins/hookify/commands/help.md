@@ -22,12 +22,12 @@ Hookify installs generic hooks that run on these events:
 - **UserPromptSubmit**: When user submits a prompt
 
 These hooks read configuration files from both locations and check if any rules match the current operation:
-- **Project rules**: `.claude/hookify.*.local.md` (current project only)
-- **Global rules**: `~/.claude/hookify.*.local.md` (all projects)
+- **Project rules**: `.claude/hookify/hookify.*.local.md` (current project only)
+- **Global rules**: `~/.claude/hookify/hookify.*.global.md` (all projects)
 
 ### 2. Configuration Files
 
-Users create rules in `hookify.{rule-name}.local.md` files in either location:
+Users create rules in `hookify.{rule-name}.local.md` (project) or `hookify.{rule-name}.global.md` (global) files in the appropriate location:
 
 ```markdown
 ---
@@ -60,8 +60,8 @@ The message body is what Claude sees when the rule triggers.
 This analyzes your request and creates the appropriate rule file.
 
 **Option B: Create manually**
-- Project-only: `.claude/hookify.my-rule.local.md`
-- All projects: `~/.claude/hookify.my-rule.local.md`
+- Project-only: `.claude/hookify/hookify.my-rule.local.md`
+- All projects: `~/.claude/hookify/hookify.my-rule.global.md`
 
 **Option C: Analyze conversation**
 ```
@@ -134,18 +134,18 @@ Use Python regex syntax:
 
 ## Important Notes
 
-**No Restart Needed**: Hookify rules (`.local.md` files) take effect immediately on the next tool use. The hookify hooks are already loaded and read your rules dynamically.
+**No Restart Needed**: Hookify rules take effect immediately on the next tool use. The hookify hooks are already loaded and read your rules dynamically.
 
 **Block or Warn**: Rules can either `block` operations (prevent execution) or `warn` (show message but allow). Set `action: block` or `action: warn` in the rule's frontmatter.
 
-**Rule Files**: Keep rules in `.claude/hookify.*.local.md` (project) or `~/.claude/hookify.*.local.md` (global). Project rules should be git-ignored.
+**Rule Files**: Keep rules in `.claude/hookify/hookify.*.local.md` (project) or `~/.claude/hookify/hookify.*.global.md` (global). Project rules should be git-ignored.
 
 **Disable Rules**: Set `enabled: false` in frontmatter or delete the file.
 
 ## Troubleshooting
 
 **Hook not triggering:**
-- Check rule file is in `.claude/` (project) or `~/.claude/` (global)
+- Check rule file is in `.claude/hookify/` (project) or `~/.claude/hookify/` (global)
 - Verify `enabled: true` in frontmatter
 - Confirm pattern is valid regex
 - Test pattern: `python3 -c "import re; print(re.search('your_pattern', 'test_text'))"`
@@ -171,7 +171,7 @@ Use Python regex syntax:
    - Ask Claude to run `rm -rf /tmp/test`
    - You should see the warning
 
-4. Refine the rule by editing the `.local.md` file (in `.claude/` or `~/.claude/`)
+4. Refine the rule by editing the rule file (in `.claude/hookify/` or `~/.claude/hookify/`)
 
 5. Create more rules as you encounter unwanted behaviors
 

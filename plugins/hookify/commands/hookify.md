@@ -71,8 +71,8 @@ After gathering behaviors (from arguments or agent), present to user using AskUs
 **Question 2: Where should the rules be saved?**
 - Header: "Rule Scope"
 - Options:
-  - "This project only" → save in `.claude/hookify.{name}.local.md` (project directory)
-  - "All projects (global)" → save in `~/.claude/hookify.{name}.local.md` (home directory)
+  - "This project only" → save in `.claude/hookify/hookify.{name}.local.md` (project directory)
+  - "All projects (global)" → save in `~/.claude/hookify/hookify.{name}.global.md` (home directory)
 
 **Question 3: For each selected behavior, ask about action:**
 - "Should this block the operation or just warn?"
@@ -88,8 +88,8 @@ After gathering behaviors (from arguments or agent), present to user using AskUs
 ### Step 3: Generate Rule Files
 
 Based on the user's scope choice (Question 2), create rule files in the appropriate location:
-- **Project**: `.claude/hookify.{rule-name}.local.md`
-- **Global**: `~/.claude/hookify.{rule-name}.local.md`
+- **Project**: `.claude/hookify/hookify.{rule-name}.local.md`
+- **Global**: `~/.claude/hookify/hookify.{rule-name}.global.md`
 
 **Rule naming convention:**
 - Use kebab-case
@@ -135,23 +135,23 @@ conditions:
 
 **IMPORTANT**: Rule files must be created in the location the user chose in Question 2, NOT the plugin directory.
 
-- **Project scope**: Use `.claude/` in the current working directory
-- **Global scope**: Use `~/.claude/` in the user's home directory
+- **Project scope**: Use `.claude/hookify/` in the current working directory
+- **Global scope**: Use `~/.claude/hookify/` in the user's home directory
 
-1. Check if the target `.claude/` directory exists
-   - Project: `mkdir -p .claude`
-   - Global: `mkdir -p ~/.claude`
+1. Check if the target directory exists
+   - Project: `mkdir -p .claude/hookify`
+   - Global: `mkdir -p ~/.claude/hookify`
 
 2. Use Write tool to create each rule file in the chosen location:
-   - Project: `.claude/hookify.{name}.local.md`
-   - Global: `~/.claude/hookify.{name}.local.md`
+   - Project: `.claude/hookify/hookify.{name}.local.md`
+   - Global: `~/.claude/hookify/hookify.{name}.global.md`
 
 3. Show user what was created, including the scope:
    ```
    Created 3 hookify rules (project scope):
-   - .claude/hookify.dangerous-rm.local.md
-   - .claude/hookify.console-log.local.md
-   - .claude/hookify.sensitive-files.local.md
+   - .claude/hookify/hookify.dangerous-rm.local.md
+   - .claude/hookify/hookify.console-log.local.md
+   - .claude/hookify/hookify.sensitive-files.local.md
 
    These rules will trigger on:
    - dangerous-rm: Bash commands matching "rm -rf"
@@ -194,7 +194,7 @@ conditions:
 1. Analyze: User wants to prevent rm -rf commands
 2. Ask: "Should I block this command or just warn you?"
 3. User selects: "Just warn"
-4. Create `.claude/hookify.dangerous-rm.local.md`:
+4. Create `.claude/hookify/hookify.dangerous-rm.local.md`:
    ```markdown
    ---
    name: warn-dangerous-rm
@@ -213,7 +213,7 @@ conditions:
 ## Important Notes
 
 - **No restart needed**: Rules take effect immediately on the next tool use
-- **File location**: Create files in project's `.claude/` directory (current working directory), NOT the plugin's .claude/
+- **File location**: Create files in project's `.claude/hookify/` directory (current working directory), NOT the plugin's .claude/
 - **Regex syntax**: Use Python regex syntax (raw strings, no need to escape in YAML)
 - **Action types**: Rules can `warn` (default) or `block` operations
 - **Testing**: Test rules immediately after creating them
@@ -222,8 +222,8 @@ conditions:
 
 **If rule file creation fails:**
 1. Check current working directory with pwd
-2. Ensure `.claude/` directory exists (create with mkdir if needed)
-3. Use absolute path if needed: `{cwd}/.claude/hookify.{name}.local.md`
+2. Ensure `.claude/hookify/` directory exists (create with `mkdir -p` if needed)
+3. Use absolute path if needed: `{cwd}/.claude/hookify/hookify.{name}.local.md`
 4. Verify file was created with Glob or ls
 
 **If rule doesn't trigger after creation:**

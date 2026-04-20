@@ -172,5 +172,5 @@ Recommend creating rules for high and medium severity issues.
 Provide your analysis in the structured format above. The /hookify command will use this to:
 1. Present findings to user
 2. Ask which rules to create
-3. Generate .local.md configuration files
-4. Save rules to .claude directory
+3. Generate .local.md (project) or .global.md (global) configuration files
+4. Save rules to .claude/hookify/ or ~/.claude/hookify/ directory

@@ -1,7 +1,7 @@
 {
   "name": "hookify",
-  "version": "0.1.3",
-  "description": "Easily create hooks to prevent unwanted behaviors by analyzing conversation patterns. Patched: stderr+exit 2 for blocking, read event type, global rules.",
+  "version": "0.1.4",
+  "description": "Easily create hooks to prevent unwanted behaviors by analyzing conversation patterns. Patched: stderr+exit 2 for blocking, read event type, global rules, .claude/hookify/ subdir with .local/.global suffixes.",
   "author": {
     "name": "Welt Studio",
     "email": "dev@weltstudio.com.br"

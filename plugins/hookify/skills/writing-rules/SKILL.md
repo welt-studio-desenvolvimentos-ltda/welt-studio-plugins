@@ -9,8 +9,8 @@ version: 0.1.0
 ## Overview
 
 Hookify rules are markdown files with YAML frontmatter that define patterns to watch for and messages to show when those patterns match. Rules are stored in:
-- **Project**: `.claude/hookify.{rule-name}.local.md` (current project only)
-- **Global**: `~/.claude/hookify.{rule-name}.local.md` (all projects)
+- **Project**: `.claude/hookify/hookify.{rule-name}.local.md` (current project only)
+- **Global**: `~/.claude/hookify/hookify.{rule-name}.global.md` (all projects)
 
 ## Rule File Format
 
@@ -285,20 +285,20 @@ Better: `rm\s+-rf`
 ## File Organization
 
 **Locations:**
-- Project rules: `.claude/hookify.{descriptive-name}.local.md` (current project only)
-- Global rules: `~/.claude/hookify.{descriptive-name}.local.md` (all projects)
+- Project rules: `.claude/hookify/hookify.{descriptive-name}.local.md` (current project only)
+- Global rules: `~/.claude/hookify/hookify.{descriptive-name}.global.md` (all projects)
 
-**Gitignore:** Add `.claude/*.local.md` to `.gitignore` for project rules
+**Gitignore:** Add `.claude/hookify/*.local.md` to `.gitignore` for project rules
 
 **Good names:**
-- `hookify.dangerous-rm.local.md`
-- `hookify.console-log.local.md`
-- `hookify.require-tests.local.md`
-- `hookify.sensitive-files.local.md`
+- `hookify.dangerous-rm.local.md` (project)
+- `hookify.console-log.local.md` (project)
+- `hookify.require-tests.global.md` (global)
+- `hookify.sensitive-files.global.md` (global)
 
 **Bad names:**
 - `hookify.rule1.local.md` (not descriptive)
-- `hookify.md` (missing .local)
+- `hookify.md` (missing .local/.global)
 - `danger.local.md` (missing hookify prefix)
 
 ## Workflow
@@ -309,12 +309,12 @@ Better: `rm\s+-rf`
 2. Determine which tool is involved (Bash, Edit, etc.)
 3. Choose event type (bash, file, stop, etc.)
 4. Write regex pattern
-5. Create rule file in chosen scope: `.claude/` (project) or `~/.claude/` (global)
+5. Create rule file in chosen scope: `.claude/hookify/` (project) or `~/.claude/hookify/` (global)
 6. Test immediately - rules are read dynamically on next tool use
 
 ### Refining a Rule
 
-1. Edit the `.local.md` file
+1. Edit the `.local.md` or `.global.md` file
 2. Adjust pattern or message
 3. Test immediately - changes take effect on next tool use
 
