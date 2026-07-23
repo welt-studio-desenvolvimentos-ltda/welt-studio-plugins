@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>spec-gate dashboard</title>
+<style>
+  :root{--bg:#1a1d21;--card:#24282e;--text:#e8eaed;--dim:#9aa0a6;--blue:#4c8bf5;
+    --green:#34a853;--yellow:#fbbc04;--red:#ea4335;--gray:#5f6368}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:760px;margin:auto}
+  .stamp{color:var(--dim);text-align:right;font-family:monospace;margin-bottom:16px}
+  .card{background:var(--card);border-radius:12px;padding:20px;margin-bottom:16px}
+  .card h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+  .proj{font-size:16px}
+  .bar{height:8px;background:#333;border-radius:4px;overflow:hidden;margin:10px 0}
+  .bar>div{height:100%;background:var(--blue);transition:width .4s}
+  .counts{color:var(--dim);font-size:13px;margin-bottom:8px}
+  .counts b{color:var(--text)}
+  .item{border-top:1px solid #333;padding:12px 0}
+  .item:first-of-type{border-top:none}
+  .id{font-family:monospace;color:var(--dim);font-size:12px}
+  .title{margin:2px 0 4px}
+  .meta{font-size:12px;color:var(--dim);font-family:monospace}
+  .pill{float:right;font-size:12px;font-weight:600;padding:2px 10px;border-radius:10px}
+  .pending{background:#3a3f47;color:var(--dim)}
+  .running{background:rgba(76,139,245,.18);color:var(--blue)}
+  .delivered{background:rgba(52,168,83,.18);color:var(--green)}
+  .skipped{background:rgba(251,188,4,.15);color:var(--yellow)}
+  .failed{background:rgba(234,67,53,.15);color:var(--red)}
+  .q{background:#2c2417;border-left:3px solid var(--yellow);border-radius:6px;padding:8px 12px;margin-top:8px;font-size:13px}
+  .empty{color:var(--dim);font-style:italic}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="stamp" id="stamp">carregando…</div>
+
+<div class="card"><h2>Projeto</h2><div class="proj" id="proj">…</div></div>
+
+<div class="card">
+  <h2>Lote</h2>
+  <div class="counts" id="counts"></div>
+  <div class="bar"><div id="barfill" style="width:0%"></div></div>
+</div>
+
+<div class="card">
+  <h2>Backlog</h2>
+  <div id="items" class="empty">nenhum lote iniciado, rode /spec-gate:backlog</div>
+</div>
+
+<div class="card">
+  <h2>Perguntas aguardando o PO</h2>
+  <div id="questions" class="empty">nenhuma</div>
+</div>
+
+<div class="card">
+  <h2>Work Log</h2>
+  <div id="worklog" class="empty">sem eventos ainda</div>
+</div>
+
+<script>
+const CLASSES = ["pending","running","delivered","skipped","failed"];
+function pill(st){
+  const c = CLASSES.includes(st) ? st : "pending";
+  return `<span class="pill ${c}">${esc(st||"pending")}</span>`;
+}
+function baseName(p){ return (p||"").split("/").pop(); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function render(state){
+  const stamp = document.getElementById("stamp");
+  const cfg = state.config || {};
+  document.getElementById("proj").textContent =
+    cfg.project_name || "(sem nome, defina project_name no .specgate.json)";
+
+  const data = state.batch;
+  const itemsEl = document.getElementById("items");
+  const qEl = document.getElementById("questions");
+  if(!data || !Array.isArray(data.items) || data.items.length === 0){
+    itemsEl.className = "empty";
+    itemsEl.textContent = "nenhum lote iniciado, rode /spec-gate:backlog";
+    document.getElementById("counts").textContent = "";
+    document.getElementById("barfill").style.width = "0%";
+  }else{
+    const items = data.items;
+    const n = s => items.filter(i => (i.status||"pending") === s).length;
+    const done = n("delivered"), skip = n("skipped"), fail = n("failed");
+    const total = items.length;
+    document.getElementById("counts").innerHTML =
+      `<b>${done}</b>/${total} entregues · ${skip} pulados · ${fail} falhas · ${n("pending")+n("running")} restantes`;
+    document.getElementById("barfill").style.width = Math.round(100*done/total) + "%";
+    itemsEl.className = "";
+    itemsEl.innerHTML = items.map(i => `
+      <div class="item">
+        ${pill(i.status)}
+        <div class="id">${esc(baseName(i.spec))}</div>
+        <div class="title">${esc(i.title || baseName(i.spec).replace(/^\d+-|\.md$/g,"").replace(/-/g," "))}</div>
+        <div class="meta">tentativas ${esc(i.attempts ?? 0)}${i.commit ? " · " + esc(String(i.commit).slice(0,9)) : ""}${i.updated ? " · " + esc(i.updated) : ""}</div>
+      </div>`).join("");
+    const qs = items.flatMap(i => (i.questions||[]).map(q => ({spec: baseName(i.spec), q})));
+    if(qs.length){
+      qEl.className = "";
+      qEl.innerHTML = qs.map(x => `<div class="q"><span class="id">${esc(x.spec)}</span><br>${esc(x.q)}</div>`).join("");
+    }else{
+      qEl.className = "empty"; qEl.textContent = "nenhuma";
+    }
+  }
+  const wl = document.getElementById("worklog");
+  const evs = state.events || [];
+  if(evs.length){
+    const badge = e => {
+      if(e.event === "SubagentStop") return ["subagent stop", "skipped"];
+      if(e.event === "SessionStart") return ["session", "running"];
+      if(e.event === "Stop") return ["stop", "delivered"];
+      if(e.event === "UserPromptSubmit") return ["prompt", "running"];
+      return [(e.tool||"tool").toLowerCase(), "pending"];
+    };
+    wl.className = "";
+    wl.innerHTML = evs.map(e => {
+      const [label, cls] = badge(e);
+      return `<div class="item"><span class="pill ${cls}">${esc(label)}</span>` +
+        `<span class="id">${esc(e.ts||"")}</span> ` +
+        `${e.agent ? "<b>"+esc(e.agent)+"</b> " : ""}` +
+        `<span class="meta">${esc(e.detail||"")}</span></div>`;
+    }).join("");
+  }else{ wl.className = "empty"; wl.textContent = "sem eventos ainda"; }
+  stamp.textContent = "as of " + new Date().toLocaleTimeString();
+}
+
+window.addEventListener("message", e => render(e.data || {}));
+</script>
+</body>
+</html>

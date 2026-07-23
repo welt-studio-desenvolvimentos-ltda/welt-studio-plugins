@@ -1,2 +1,10 @@
 .claude/
 CLAUDE.md
+
+# Artefatos Python (hooks do spec-gate/hookify rodam via python3)
+__pycache__/
+*.py[cod]
+
+# Artefatos da extensão VSCode
+node_modules/
+*.vsix

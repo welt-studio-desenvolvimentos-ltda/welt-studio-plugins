@@ -1,0 +1,8 @@
+{
+  "name": "spec-gate",
+  "description": "Pipeline spec-first com testes black-box, gates mecânicos de commit e regras de escalação. Destilado das melhores ideias de governança de agentes (loop engineering), sem as cerimônias.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Welt Studio"
+  }
+}

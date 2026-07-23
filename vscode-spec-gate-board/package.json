@@ -1,0 +1,15 @@
+{
+  "name": "spec-gate-board",
+  "displayName": "spec-gate Board",
+  "description": "Janela fixa com o board do lote spec-gate, atualizando ao vivo a partir do .specgate/batch.json",
+  "version": "0.1.0",
+  "publisher": "welt-studio",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./extension.js",
+  "activationEvents": ["workspaceContains:.specgate.json"],
+  "contributes": {
+    "commands": [
+      { "command": "specgate.showBoard", "title": "spec-gate: Show Board" }
+    ]
+  }
+}

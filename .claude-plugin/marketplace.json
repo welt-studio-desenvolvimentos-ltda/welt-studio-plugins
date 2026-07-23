@@ -24,8 +24,14 @@
     {
       "name": "hookify",
       "source": "./plugins/hookify",
-      "description": "User-configurable hooks from .local.md files. Patched: stderr+exit 2 for blocking, read event type, global rules.",
-      "version": "0.1.3"
+      "description": "User-configurable hooks from Markdown rule files. Patched: stderr+exit 2 for blocking, read event type, global rules, .claude/hookify/ subdir with .local/.global suffixes.",
+      "version": "0.1.4"
+    },
+    {
+      "name": "spec-gate",
+      "source": "./plugins/spec-gate",
+      "description": "Pipeline spec-first com testes black-box, gates mecânicos de commit e regras de escalação obrigatória.",
+      "version": "0.1.0"
     }
   ]
 }
