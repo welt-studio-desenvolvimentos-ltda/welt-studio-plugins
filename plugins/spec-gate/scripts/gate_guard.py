@@ -21,6 +21,19 @@ import shlex
 import subprocess
 import sys
 
+try:
+    # O import roda antes de sabermos se o projeto usa spec-gate, e este é um
+    # hook BLOQUEANTE: se ele quebrar, trava a sessão do usuário. Uma
+    # instalação corrompida ou checkout parcial não pode derrubar o guard —
+    # por isso o import é à prova de falha e o módulo vira None quando
+    # ausente. Captura qualquer Exception (não só ImportError): um
+    # specgate_state.py truncado/corrompido levanta SyntaxError na
+    # importação, que não é subclasse de ImportError e escaparia do except
+    # mais estrito.
+    import specgate_state
+except Exception:
+    specgate_state = None
+
 READ_LIKE_TOOLS = {"Read", "Grep", "Glob"}
 BASH_READ_CMDS = {
     "cat", "head", "tail", "less", "more", "grep", "rg", "ag", "sed",
@@ -44,6 +57,8 @@ BASH_WRITE_RES = [
     re.compile(r"\b(mv|cp|rm)\b"),
     re.compile(r"\btruncate\b"),
 ]
+PHASE_REL = os.path.join(".specgate", "phase")
+GATE_REL = os.path.join(".specgate", "gate.json")
 
 
 def guard_spec_lock(tool, tool_input, cwd, cfg):
@@ -227,6 +242,75 @@ def guard_regression(tool_input, cwd, cfg):
         )
 
 
+def write_targets(tool, tool_input):
+    """Caminhos que esta chamada pretende escrever.
+
+    Usado pelos guards que protegem arquivos de estado. Para Bash, devolve
+    todos os tokens não-flag quando o comando tem cara de escrita — é
+    grosseiro de propósito: preferimos um falso positivo (que o agente
+    contorna explicando ao PO) a um falso negativo que fura o gate.
+    """
+    if tool in ("Write", "Edit"):
+        c = tool_input.get("file_path") or tool_input.get("path")
+        return [c] if isinstance(c, str) else []
+    if tool != "Bash":
+        return []
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not cmd:
+        return []
+    if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
+        return []
+    try:
+        tokens = shlex.split(cmd, posix=True)
+    except ValueError:
+        tokens = cmd.split()
+    return [t for t in tokens[1:] if not t.startswith("-")]
+
+
+def _same_file(candidate, cwd, rel):
+    if not candidate:
+        return False
+    return os.path.realpath(os.path.join(cwd, os.path.expanduser(candidate))) == \
+        os.path.realpath(os.path.join(cwd, rel))
+
+
+def _open_gates_seguro(cwd):
+    """Wrapper fail-open sobre specgate_state.open_gates.
+
+    Protege o ponto de USO, não só o import do topo: com o módulo ausente
+    (import falhou -> None) a chamada seria AttributeError em NoneType; com
+    o módulo presente mas desatualizado/parcial (sem open_gates), seria
+    AttributeError no atributo. Nos dois casos um guard bloqueante não pode
+    quebrar — assume-se "sem gates abertos" e a ação segue liberada.
+    """
+    if specgate_state is None:
+        return []
+    try:
+        return specgate_state.open_gates(cwd)
+    except Exception:
+        return []
+
+
+def guard_po_gate(tool, tool_input, cwd):
+    """Chokepoint: com gate de PO aberto, a transição de fase fica travada.
+
+    Toda transição de fase passa por escrita em .specgate/phase, então
+    bloquear esse arquivo impede fisicamente o fluxo de avançar.
+    """
+    gates = _open_gates_seguro(cwd)
+    if not gates:
+        return
+    if not any(_same_file(t, cwd, PHASE_REL) for t in write_targets(tool, tool_input)):
+        return
+    nomes = ", ".join(str(g.get("checkpoint", "?")) for g in gates)
+    block(
+        f"[spec-gate] GATE DE PO ABERTO ({nomes}). O fluxo não avança de fase "
+        "enquanto o PO não decidir. NÃO tente contornar o bloqueio nem editar "
+        "o arquivo de fase por outro caminho. Apresente ao PO a decisão "
+        "pendente, em uma linha e com opções concretas, e aguarde a resposta."
+    )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -242,6 +326,7 @@ def main():
         sys.exit(0)  # projeto não usa spec-gate; guard totalmente inerte
 
     try:
+        guard_po_gate(tool, tool_input, cwd)
         phase = current_phase(cwd)
         if phase == "testing":
             guard_testing_phase(tool, tool_input, cwd, cfg)
