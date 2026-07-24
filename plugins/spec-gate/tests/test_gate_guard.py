@@ -121,6 +121,49 @@ class InterpreterEscapeTest(GuardBase):
         r = self.bash("python3 -c \"print('hello world')\"")
         self.assertEqual(r.returncode, 0)
 
+    def test_node_dash_e_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash(
+            "node -e \"require('fs').writeFileSync('.specgate/phase','implementing')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_ruby_dash_e_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash(
+            "ruby -e \"File.write('.specgate/phase','implementing')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_php_dash_r_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash(
+            "php -r \"file_put_contents('.specgate/phase','implementing');\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_perl_dash_e_open_3_argumentos_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash(
+            "perl -e \"open(my $fh, '>', '.specgate/phase'); print $fh 'implementing';\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_perl_dash_e_open_2_argumentos_com_modo_colado_e_bloqueado(self):
+        # Idioma clássico do Perl: open de 2 argumentos com o modo (>) colado
+        # no caminho. A string extraída vira '>.specgate/phase', que não bate
+        # por igualdade de path se não for tratada.
+        self._abre_gate()
+        r = self.bash(
+            "perl -e \"open(F,'>.specgate/phase'); print F 'implementing'; close(F);\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
     def test_python3_dash_c_sem_gate_aberto_passa(self):
         r = self.bash(
             "python3 -c \"open('.specgate/phase','w').write('implementing')\""

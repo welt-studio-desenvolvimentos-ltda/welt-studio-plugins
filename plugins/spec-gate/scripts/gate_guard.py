@@ -304,6 +304,15 @@ def _inline_write_candidates(code):
     """
     candidates = [m[1] for m in _QUOTED_STRING_RE.findall(code)]
     candidates.extend(t for t in re.split(r"[\s'\"();|&]+", code) if t)
+    # Idioma clássico do Perl: open de 2 argumentos com o modo colado no
+    # caminho (`open(F,'>arquivo')`, `'>>arquivo'` para apêndice). A string
+    # extraída vem como '>arquivo'/'>>arquivo' e não bate por igualdade de
+    # path contra o alvo real (`_same_file` compara caminho resolvido) — por
+    # isso também oferecemos a versão sem o(s) '>' colado(s) como candidata.
+    candidates.extend(
+        c.lstrip(">") for c in list(candidates)
+        if c.startswith(">") and c.lstrip(">")
+    )
     return candidates
 
 
