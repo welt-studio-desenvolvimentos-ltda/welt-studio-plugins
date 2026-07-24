@@ -707,5 +707,153 @@ class AberturaAntedatadaTest(GuardBase):
         self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", aprovacao.stderr)
 
 
+class MainFailOpenPayloadTest(GuardBase):
+    """Brecha 1 (Critical, fail-open): main() fazia o parsing do payload e
+    chamava load_config(cwd) FORA do try/except que garante fail-open. Só
+    o json.load estava protegido, e só contra ValueError. Um payload JSON
+    válido mas não-objeto (list/int/str/null), ou um cwd de tipo não-string
+    dentro de um payload válido, gerava traceback e exit 1 — violando o
+    contrato "qualquer erro interno resulta em exit 0".
+    """
+
+    def _run_raw(self, raw_stdin):
+        return subprocess.run(
+            [sys.executable, GUARD], input=raw_stdin,
+            capture_output=True, text=True, cwd=self.tmp,
+        )
+
+    def test_payload_lista_sai_zero_sem_traceback(self):
+        r = self._run_raw("[1, 2, 3]")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_payload_numero_sai_zero_sem_traceback(self):
+        r = self._run_raw("42")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_payload_string_sai_zero_sem_traceback(self):
+        r = self._run_raw('"hi"')
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_payload_null_sai_zero_sem_traceback(self):
+        r = self._run_raw("null")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cwd_como_lista_sai_zero_sem_traceback(self):
+        r = self._run_raw(json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "cwd": [1, 2],
+        }))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cwd_como_int_sai_zero_sem_traceback(self):
+        r = self._run_raw(json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "cwd": 42,
+        }))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cwd_como_dict_sai_zero_sem_traceback(self):
+        r = self._run_raw(json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "cwd": {"a": 1},
+        }))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_tool_input_nao_dict_sai_zero_sem_traceback(self):
+        r = self._run_raw(json.dumps({
+            "tool_name": "Bash",
+            "tool_input": "nao é um objeto",
+            "cwd": self.tmp,
+        }))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+
+class SeqLockTest(GuardBase):
+    """Brecha 2: `.specgate/seq` é a prova inforjável de que o usuário
+    falou (`has_human_turn_since` compara seq_atual > opened_at_seq), e
+    toda a camada forte do gate de PO repousa nisso. Nada impedia o agente
+    de escrever o arquivo diretamente — o único caminho legítimo é
+    log_event.py rodando como HOOK no UserPromptSubmit, que não passa por
+    este guard PreToolUse.
+    """
+
+    def test_write_em_seq_e_bloqueado(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/seq", "content": "9999"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_edit_em_seq_e_bloqueado(self):
+        self.state("seq", "1")
+        r = run_guard({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": ".specgate/seq",
+                "old_string": "1",
+                "new_string": "9999",
+            },
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_echo_redirect_para_seq_via_bash_e_bloqueado(self):
+        r = self.bash("echo 9999 > .specgate/seq")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_python_dash_c_escrevendo_seq_e_bloqueado(self):
+        r = self.bash(
+            "python3 -c \"open('.specgate/seq','w').write('9999')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_sh_dash_c_escrevendo_seq_e_bloqueado(self):
+        r = self.bash('sh -c "echo 9999 > .specgate/seq"')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_tee_para_seq_via_bash_e_bloqueado(self):
+        r = self.bash("echo 9999 | tee .specgate/seq")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_sem_specgate_json_escrita_em_seq_e_inerte(self):
+        # Não-regressão: sem .specgate.json o guard inteiro é inerte,
+        # inclusive este — o projeto simplesmente não usa spec-gate.
+        os.remove(os.path.join(self.tmp, ".specgate.json"))
+        r = self.bash("echo 9999 > .specgate/seq")
+        self.assertEqual(r.returncode, 0)
+
+    def test_escrita_em_outro_arquivo_qualquer_nao_e_afetada(self):
+        # Não-regressão: o guard novo não deve bloquear escritas que não
+        # tocam .specgate/seq.
+        r = self.bash("echo oi > outro-arquivo.txt")
+        self.assertEqual(r.returncode, 0)
+
+    def test_write_em_outro_arquivo_dentro_de_specgate_nao_e_afetado(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": "testing"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

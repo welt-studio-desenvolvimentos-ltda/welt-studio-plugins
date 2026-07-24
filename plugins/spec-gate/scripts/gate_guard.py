@@ -79,6 +79,7 @@ _INTERPRETER_INLINE_FLAGS = {
 _QUOTED_STRING_RE = re.compile(r"(['\"])(.*?)\1")
 PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
+SEQ_REL = os.path.join(".specgate", "seq")
 
 
 def guard_spec_lock(tool, tool_input, cwd, cfg):
@@ -424,6 +425,36 @@ def _read_gates_seguro(cwd):
         return specgate_state.read_gates(cwd)
     except Exception:
         return []
+
+
+def guard_seq_lock(tool, tool_input, cwd):
+    """Bloqueia qualquer escrita do agente em .specgate/seq.
+
+    `.specgate/seq` é o contador de turnos que `has_human_turn_since` usa
+    para provar que um `UserPromptSubmit` real aconteceu — é a raiz da
+    camada forte de todo o gate de PO (ver o comentário "MODELO DE CAMADAS"
+    acima de `write_targets`). O ÚNICO caminho legítimo de escrita é
+    `log_event.py`, disparado como HOOK no evento `UserPromptSubmit`; por
+    rodar como hook (e não como tool call do agente), ele nunca passa por
+    este guard PreToolUse, então bloquear aqui não afeta o incremento real.
+    Qualquer escrita partindo de uma tool call — Write, Edit, ou Bash via
+    redirecionamento/tee/sed -i/mv/cp/truncate/interpretador inline, tudo
+    já reconhecido por `write_targets` — forjaria essa prova e por isso é
+    bloqueada incondicionalmente, sem exceção e sem depender de haver gate
+    aberto.
+    """
+    if not any(_same_file(t, cwd, SEQ_REL) for t in write_targets(tool, tool_input)):
+        return
+    block(
+        "[spec-gate] ESCRITA EM .specgate/seq BLOQUEADA. Este contador de "
+        "turnos é mantido exclusivamente pelo sistema (o hook log_event.py, "
+        "disparado no evento UserPromptSubmit) e nunca pode ser escrito "
+        "pelo agente: ele é a prova inforjável de que o usuário falou, da "
+        "qual depende todo o gate de PO. Escrever aqui diretamente (Write, "
+        "Edit, Bash, ou qualquer interpretador) forjaria essa prova. NÃO "
+        "tente contornar por outro caminho — se você precisa que o usuário "
+        "fale, peça e aguarde a resposta real."
+    )
 
 
 def guard_po_gate(tool, tool_input, cwd):
@@ -972,15 +1003,35 @@ def main():
     except ValueError:
         sys.exit(0)
 
-    tool = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input") or {}
-    cwd = payload.get("cwd") or os.getcwd()
+    if not isinstance(payload, dict):
+        # Payload que não é um objeto JSON (lista, número, string, null...)
+        # não tem .get(...) — qualquer acesso abaixo levantaria AttributeError
+        # não capturado. Sem um payload no formato esperado não há o que
+        # avaliar: fail-open.
+        sys.exit(0)
 
-    cfg = load_config(cwd)
-    if cfg is None:
-        sys.exit(0)  # projeto não usa spec-gate; guard totalmente inerte
-
+    # TUDO que roda a partir daqui — extração de campos, load_config, e os
+    # guards propriamente ditos — precisa estar dentro do try/except: este é
+    # um hook BLOQUEANTE, e o contrato do módulo é "qualquer erro interno
+    # resulta em exit 0", sem exceção de fase nenhuma do processamento.
     try:
+        tool = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+
+        cwd = payload.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            # cwd ausente ou de tipo inesperado (list/int/dict/None): não dá
+            # para confiar nele para os.path.join. Cai no cwd real do
+            # processo, que é sempre uma string válida.
+            cwd = os.getcwd()
+
+        cfg = load_config(cwd)
+        if cfg is None:
+            sys.exit(0)  # projeto não usa spec-gate; guard totalmente inerte
+
+        guard_seq_lock(tool, tool_input, cwd)
         guard_po_gate(tool, tool_input, cwd)
         guard_gate_clear(tool, tool_input, cwd)
         phase = current_phase(cwd)
