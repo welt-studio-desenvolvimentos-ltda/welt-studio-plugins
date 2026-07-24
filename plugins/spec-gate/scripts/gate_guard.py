@@ -57,6 +57,26 @@ BASH_WRITE_RES = [
     re.compile(r"\b(mv|cp|rm)\b"),
     re.compile(r"\btruncate\b"),
 ]
+# Invocação de interpretador com código inline: `python3 -c "..."`,
+# `sh -c "..."`, etc. escapam por completo dos regexes acima porque o
+# comando Bash em si não tem `>`, `tee`, `sed -i`... a escrita acontece
+# DENTRO do código passado ao interpretador. Ver o comentário longo em
+# cima de `write_targets` para o porquê disto ser "fechar o barato" e não
+# um parser de verdade.
+_INTERPRETER_INLINE_FLAGS = {
+    "python": {"-c"},
+    "node": {"-e", "--eval"},
+    "nodejs": {"-e", "--eval"},
+    "perl": {"-e"},
+    "ruby": {"-e"},
+    "php": {"-r"},
+    "sh": {"-c"},
+    "bash": {"-c"},
+    "dash": {"-c"},
+    "zsh": {"-c"},
+    "ksh": {"-c"},
+}
+_QUOTED_STRING_RE = re.compile(r"(['\"])(.*?)\1")
 PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
 
@@ -242,6 +262,88 @@ def guard_regression(tool_input, cwd, cfg):
         )
 
 
+def _interpreter_name(token):
+    """Normaliza o nome do binário do interpretador.
+
+    Aceita caminho completo (`/usr/bin/python3`) e versões coladas no nome
+    (`python3.11`, `node18`) — o resto (perl, ruby, php, sh, bash, ...)
+    já bate direto com a chave do dicionário de flags.
+    """
+    base = os.path.basename(token)
+    return re.sub(r"^(python|node)[0-9.]*$", r"\1", base)
+
+
+def _interpreter_inline_code(tokens):
+    """Se `tokens` é uma invocação de interpretador com código inline
+    (`python3 -c "..."`, `sh -c "..."`, `node -e "..."`, ...), devolve a
+    string do código. Caso contrário, None.
+    """
+    if not tokens:
+        return None
+    flags = _INTERPRETER_INLINE_FLAGS.get(_interpreter_name(tokens[0]))
+    if not flags:
+        return None
+    for i, t in enumerate(tokens[1:], start=1):
+        if t in flags and i + 1 < len(tokens):
+            return tokens[i + 1]
+    return None
+
+
+def _inline_write_candidates(code):
+    """Candidatos a caminho dentro de um trecho de código-fonte arbitrário
+    passado a um interpretador.
+
+    Não interpretamos a linguagem — não há (e não vamos escrever) um parser
+    de Python/JS/Perl/Ruby/PHP/shell aqui. Extraímos o conteúdo de toda
+    string literal (aspas simples ou duplas), que é onde um caminho de
+    arquivo aparece no uso idiomático de escrita (`open(...)`,
+    `fs.writeFileSync(...)`, `File.write(...)`, etc.), e também separamos
+    por espaço/pontuação para pegar o caso de `sh -c`/`bash -c`, cujo
+    conteúdo é o próprio Bash e pode ter um caminho solto depois de `>`
+    sem aspas nenhuma.
+    """
+    candidates = [m[1] for m in _QUOTED_STRING_RE.findall(code)]
+    candidates.extend(t for t in re.split(r"[\s'\"();|&]+", code) if t)
+    return candidates
+
+
+# MODELO DE CAMADAS, com garantias diferentes — leia isto antes de "completar"
+# a heurística abaixo ou de julgá-la insegura:
+#
+# 1) CAMADA DE FRICÇÃO — é esta função (write_targets) e todo o parsing de
+#    comando Bash que ela faz, incluindo o reconhecimento de interpretador
+#    logo acima. Ela encarece o desvio ACIDENTAL: o caso real que ela cobre
+#    é um modelo sob pressão racionalizando um atalho ("é só um `python -c`,
+#    não é bem uma escrita de arquivo..."), não um adversário decidido a
+#    burlar o guard de propósito. Por isso reconhecemos aqui invocação de
+#    `python`/`python3 -c`, `node -e`/`--eval`, `perl -e`, `ruby -e`,
+#    `php -r` e — os mais importantes — `sh -c`/`bash -c`, que são o desvio
+#    mais provável de todos por serem o idioma natural da própria
+#    ferramenta Bash do agente. Isto NÃO é sandbox e não pretende ser: quem
+#    quiser burlar (escrever o caminho byte a byte, base64, um segundo
+#    processo, etc.) burla. Não perseguimos esse alvo infinito aqui.
+#
+# 2) CAMADA FORTE — é outra: a validação do `seq` na escrita do gate.json
+#    (`guard_gate_clear`, que consome `specgate_state.has_human_turn_since`),
+#    que não depende de parsing nenhum, e sim de existir um turno REAL do
+#    usuário registrado no log de eventos desde que o gate abriu. Nenhum
+#    interpretador, disfarce de comando ou codificação contorna aquela,
+#    porque o Claude não fabrica um UserPromptSubmit.
+#
+# Por isso "fechar o barato" (cobrir os interpretadores óbvios de escrita
+# inline) é o nível de investimento certo para esta camada — não vale a
+# pena, e seria enganoso, tentar transformar isto num parser de verdade.
+#
+# CAMINHO FUTURO DESCARTADO (para quem for mexer aqui depois): validar a
+# legitimidade da fase no PONTO DE CONSUMO (quem lê .specgate/phase) em vez
+# de proteger o arquivo na escrita esbarra no modelo de estacionamento
+# (parking): com um gate aberto do PBI-03 estacionado, o fluxo precisa
+# continuar livre para avançar o PBI-04, então bloquear ferramentas de
+# trabalho globalmente enquanto houver QUALQUER gate aberto quebraria a
+# fila. A versão por-PBI disso exigiria rastrear qual arquivo pertence a
+# qual PBI, que é o redesign caro. Se um dia for necessário fechar essa
+# parede de verdade (camada forte de verdade, não fricção), o caminho é
+# esse rastreamento — não mais parsing de comando.
 def write_targets(tool, tool_input):
     """Caminhos que esta chamada pretende escrever.
 
@@ -258,12 +360,19 @@ def write_targets(tool, tool_input):
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or not cmd:
         return []
-    if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
-        return []
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
         tokens = cmd.split()
+    if not tokens:
+        return []
+
+    inline = _interpreter_inline_code(tokens)
+    if inline is not None:
+        return [c for c in _inline_write_candidates(inline) if c and not c.startswith("-")]
+
+    if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
+        return []
     return [t for t in tokens[1:] if not t.startswith("-")]
 
 

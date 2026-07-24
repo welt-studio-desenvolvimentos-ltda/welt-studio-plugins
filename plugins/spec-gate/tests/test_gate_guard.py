@@ -84,6 +84,58 @@ class PoGateTest(GuardBase):
         self.assertEqual(self.bash("printf 'implementing' > .specgate/phase").returncode, 0)
 
 
+class InterpreterEscapeTest(GuardBase):
+    """Cobre o furo: invocação de interpretador escrevendo em arquivo de
+    estado escapava por completo de BASH_WRITE_RES (sed/tee/>/mv|cp|rm/
+    truncate), então `write_targets` devolvia [] e `guard_po_gate` nunca
+    avaliava o alvo.
+    """
+
+    def _abre_gate(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 5}
+        ]))
+
+    def test_python3_dash_c_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash(
+            "python3 -c \"open('.specgate/phase','w').write('implementing')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_sh_dash_c_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash('sh -c "echo implementing > .specgate/phase"')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_bash_dash_c_escrevendo_phase_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash('bash -c "echo implementing > .specgate/phase"')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_python3_dash_c_sem_tocar_arquivo_de_estado_passa(self):
+        self._abre_gate()
+        r = self.bash("python3 -c \"print('hello world')\"")
+        self.assertEqual(r.returncode, 0)
+
+    def test_python3_dash_c_sem_gate_aberto_passa(self):
+        r = self.bash(
+            "python3 -c \"open('.specgate/phase','w').write('implementing')\""
+        )
+        self.assertEqual(r.returncode, 0)
+
+    def test_sh_dash_c_sem_gate_aberto_passa(self):
+        r = self.bash('sh -c "echo implementing > .specgate/phase"')
+        self.assertEqual(r.returncode, 0)
+
+    def test_bash_dash_c_sem_gate_aberto_passa(self):
+        r = self.bash('bash -c "echo implementing > .specgate/phase"')
+        self.assertEqual(r.returncode, 0)
+
+
 class PoGateFailOpenTest(GuardBase):
     """Import à prova de falha: specgate_state corrompido/incompleto não pode
     fazer o gate_guard.py (hook BLOQUEANTE) explodir. Um guard que quebra a
