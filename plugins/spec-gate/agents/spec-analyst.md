@@ -21,7 +21,7 @@ Você é o analista de spec do pipeline spec-gate. Você trabalha ANTES de exist
 
    Teste de qualidade antes de considerar o PBI pronto: um testador que nunca viu o código consegue escrever asserções com valores esperados concretos só lendo este documento? Se a resposta for não, a entrevista não terminou.
 
-4. Ao renumerar ou inserir um PBI no meio da fila, ajuste os arquivos vizinhos cuja ordem de execução mudou. A numeração é o que o modo lote (`/spec-gate:backlog`) usa para decidir a sequência.
+4. Ao renumerar ou inserir um PBI no meio da fila, ajuste os arquivos vizinhos cuja ordem de execução mudou. A numeração é o que o comando `/spec-gate` usa para decidir a sequência da fila de PBIs.
 
 ## Modo refinamento
 

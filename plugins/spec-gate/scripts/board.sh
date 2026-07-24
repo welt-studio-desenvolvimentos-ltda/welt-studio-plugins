@@ -4,7 +4,7 @@
 set -euo pipefail
 CWD="${1:-.}"
 B="$CWD/.specgate/batch.json"
-if [ ! -f "$B" ]; then echo "spec-gate: sem lote ativo (rode /spec-gate:backlog)"; exit 0; fi
+if [ ! -f "$B" ]; then echo "spec-gate: sem lote ativo (rode /spec-gate)"; exit 0; fi
 python3 - "$B" <<'PY'
 import json, sys, re
 

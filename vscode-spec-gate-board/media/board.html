@@ -45,7 +45,7 @@
 
 <div class="card">
   <h2>Backlog</h2>
-  <div id="items" class="empty">nenhum lote iniciado, rode /spec-gate:backlog</div>
+  <div id="items" class="empty">nenhum lote iniciado, rode /spec-gate</div>
 </div>
 
 <div class="card">
@@ -78,7 +78,7 @@ function render(state){
   const qEl = document.getElementById("questions");
   if(!data || !Array.isArray(data.items) || data.items.length === 0){
     itemsEl.className = "empty";
-    itemsEl.textContent = "nenhum lote iniciado, rode /spec-gate:backlog";
+    itemsEl.textContent = "nenhum lote iniciado, rode /spec-gate";
     document.getElementById("counts").textContent = "";
     document.getElementById("barfill").style.width = "0%";
   }else{

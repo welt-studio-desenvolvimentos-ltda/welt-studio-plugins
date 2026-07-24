@@ -30,48 +30,25 @@ O plugin fica completamente inerte até existir um `.specgate.json` na raiz do p
 }
 ```
 
-O comando `/spec-gate:spec` cria esse arquivo pra você na primeira vez.
+O comando `/spec-gate` cria esse arquivo pra você na primeira vez, se ele ainda não existir.
 
 Adicione `.specgate/` ao `.gitignore` do projeto (é estado de runtime).
 
 ## Uso
 
 ```
-/spec-gate:spec conversor de unidades de comprimento na CLI
+/spec-gate conversor de unidades de comprimento na CLI
 ```
 
-Escreve o SPEC.md interativamente, perguntando em vez de supor, e pede sua aprovação.
+Um único comando, auto-orientado: ele lê `.specgate/gate.json` e `.specgate/batch.json`, reporta em que fase do fluxo você está, qual PBI está em curso e qual decisão está pendente, e retoma dali — nunca é preciso lembrar em que ponto o fluxo parou.
 
-```
-/spec-gate:pipeline
-```
+O fluxo tem seis fases, sempre pelo nome (nunca por número): **Concepção** (entrevista o PO e escreve os PBIs em `docs/backlog/`), **Refinamento** (caça ambiguidade e avalia granularidade), **Testes** (subagent `blackbox-tester` escreve os testes só a partir da spec, com leitura de `source_paths` bloqueada por hook), **Implementação** (até a suíte completa passar, com teto de tentativas), **Conformidade** (subagent `spec-reviewer` audita spec contra implementação em contexto isolado) e **Commit** (gate de regressão roda a suíte inteira antes de deixar passar).
 
-Fase 1: subagent `blackbox-tester` escreve os testes só com a spec (leitura de `source_paths` bloqueada por hook). Se houver ambiguidade, o pipeline para e as perguntas voltam pra você.
-Fase 2: implementação até a suíte completa passar, com teto de tentativas.
-Fase 3: subagent `spec-reviewer` audita spec contra implementação em contexto limpo, sem receber o resumo do implementador; veredito REPROVADO devolve pra Fase 2.
-Fase 4: commit, com o gate de regressão rodando a suíte inteira antes de deixar passar.
+Três gates mecânicos pontuam esse fluxo — **gate de backlog** (aprova os PBIs antes de qualquer teste), **gate de testes** (aprova os testes como contrato antes da implementação começar) e **gate de aceite** (aprova a entrega antes do commit) — mais um quarto, o **gate de ambiguidade**, que abre sempre que um PBI é estacionado (branch `parked/NN-nome` com commit WIP) por não ter decisão do PO ainda, liberando o fluxo para seguir aos próximos itens da fila sem perder o trabalho parcial.
 
-```
-/spec-gate:backlog
-```
+## Orquestração em sessão
 
-Modo PO: processa todas as specs de `docs/backlog/` em sequência, sem parar para perguntar. Item ambíguo é pulado com as mudanças revertidas e as perguntas acumuladas; item que estoura o teto de tentativas vira FALHOU; o lote continua. No final, um relatório único: entregues com commit, pulados com as perguntas agrupadas para responder de uma vez, falhas com hipótese. Três itens pulados em sequência abortam o lote (defeito sistemático nas specs). O ciclo do PO vira: escrever specs, disparar o lote, voltar, responder o relatório, disparar de novo.
-
-## Automação total (orquestração em sessão)
-
-O modo preferido: abra o Claude Code no projeto, ative acceptEdits para a sessão (shift+tab alterna o modo de permissão) e rode `/spec-gate:backlog`. O agente principal atua como orquestrador puro: não toca em código, delega cada fase de cada item aos subagents (blackbox-tester, implementer, spec-reviewer), commita, atualiza `.specgate/batch.json` e segue ao próximo. Como o trabalho pesado acontece nos contextos isolados dos subagents, o orquestrador se mantém leve por muitos itens. O batch.json torna o lote retomável: se a sessão cair ou compactar, rode `/spec-gate:backlog` de novo e ele continua do primeiro item pendente. Para não ser interrompido por prompts de permissão de Bash, use as mesmas allow rules estreitas abaixo no `.claude/settings.json` do projeto.
-
-Alternativa opcional, sem sessão aberta, o wrapper headless incluído:
-
-```bash
-<plugin-dir>/scripts/run-backlog.sh /caminho/do/projeto
-```
-
-`<plugin-dir>` é a pasta onde o plugin foi instalado: o diretório do marketplace local (ex.: `~/.claude/plugins/marketplaces/welt-studio-plugins/plugins/spec-gate`) ou `plugins/spec-gate` num checkout do repositório. Esses scripts rodam fora do Claude Code, então precisam do caminho real — `${CLAUDE_PLUGIN_ROOT}` só resolve dentro de hooks e comandos.
-
-Ele valida pré-condições (`.specgate.json`, specs no backlog, árvore git limpa), roda `claude -p "/spec-gate:backlog"` em modo headless com `--permission-mode acceptEdits`, e imprime o `docs/backlog/REPORT.md` no final. O relatório também fica no arquivo, então dá pra disparar de qualquer lugar e ler depois.
-
-Para o headless não travar em prompt de permissão de Bash, libere no `.claude/settings.json` DO PROJETO apenas o que o pipeline precisa, por exemplo:
+O modo é sempre em sessão aberta do Claude Code: ative acceptEdits (shift+tab alterna o modo de permissão) e rode `/spec-gate`. O agente principal atua como orquestrador: não toca em código, delega cada fase aos subagents (`spec-analyst`, `blackbox-tester`, `implementer`, `spec-reviewer`), commita, atualiza `.specgate/batch.json` e `.specgate/gate.json`, e para exatamente nos pontos em que uma decisão do PO está pendente. Como o trabalho pesado acontece nos contextos isolados dos subagents, o orquestrador se mantém leve por muitos itens. O `batch.json` torna a fila retomável: se a sessão cair ou compactar, rode `/spec-gate` de novo e ele continua de onde parou. Para não ser interrompido por prompts de permissão de Bash, libere no `.claude/settings.json` do projeto apenas o que o fluxo precisa, por exemplo:
 
 ```json
 {
@@ -91,7 +68,9 @@ Para o headless não travar em prompt de permissão de Bash, libere no `.claude/
 }
 ```
 
-Evite `--dangerously-skip-permissions`: com as allow rules estreitas acima mais os quatro gates do plugin, o lote roda sozinho sem abrir mão das proteções. Os hooks disparam igual em modo headless.
+Evite `--dangerously-skip-permissions`: com as allow rules estreitas acima mais os gates do plugin, o fluxo roda sem abrir mão das proteções.
+
+Não há mais modo headless: um gate que exige turno humano real (`.specgate/seq`, incrementado só no evento `UserPromptSubmit`) não tem como funcionar sem uma sessão com um humano do outro lado.
 
 ## Dashboard ao vivo e statusline
 
@@ -111,9 +90,7 @@ Para um resumo permanente dentro do próprio Claude Code, a statusline: no `.cla
 
 mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas` na barra da sessão, atualizando conforme o lote avança.
 
-Dentro da própria conversa, três elementos visuais: a todo list nativa do Claude Code (o orquestrador mantém um todo por item, marcando conforme o lote avança, renderizada pela UI com riscado e tudo), o quadro ANSI que o orquestrador imprime após cada item (barra de progresso, itens coloridos por status, seção de perguntas do PO), e o comando `/spec-gate:board` para invocar o quadro a qualquer momento. O quadro é desenhado por `scripts/board.sh` lendo o `batch.json`, então funciona até fora do Claude Code, direto no seu terminal.
-
-Com o wrapper funcionando manualmente, agendar é trivial: uma entrada de cron no WSL2 (`crontab -e`) ou o Task Scheduler do Windows chamando `wsl -e bash <plugin-dir>/scripts/run-backlog.sh /caminho/do/projeto`. Sugestão de ritmo: você alimenta `docs/backlog/` durante o dia, o lote roda de madrugada, e o REPORT.md te espera de manhã. Valide o wrapper manualmente algumas vezes antes de agendar.
+Dentro da própria conversa, três elementos visuais: a todo list nativa do Claude Code (o orquestrador mantém um todo por item, marcando conforme a fila avança, renderizada pela UI com riscado e tudo), o quadro ANSI que o orquestrador imprime após cada item (barra de progresso, itens coloridos por status, seção de perguntas do PO), e o comando `/spec-gate:board` para invocar o quadro a qualquer momento. O quadro é desenhado por `scripts/board.sh` lendo o `batch.json`, então funciona até fora do Claude Code, direto no seu terminal.
 
 ## Como o bloqueio black-box funciona
 

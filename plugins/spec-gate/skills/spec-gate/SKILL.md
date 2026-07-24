@@ -5,7 +5,7 @@ description: Regras de trabalho do pipeline spec-gate. Use sempre que o projeto 
 
 # Regras spec-gate
 
-Este projeto usa o pipeline spec-gate. Três regras valem em qualquer tarefa, mesmo fora dos comandos `/spec-gate:spec` e `/spec-gate:pipeline`:
+Este projeto usa o pipeline spec-gate. Três regras valem em qualquer tarefa, mesmo fora do comando `/spec-gate`:
 
 ## 1. Escalação em vez de palpite
 
