@@ -944,5 +944,58 @@ class SeqLockTest(GuardBase):
         self.assertEqual(r.returncode, 0)
 
 
+class SpecFreezeTest(GuardBase):
+    """Task 6: a janela do freeze da spec começa só DEPOIS do Gate PO 1
+    (backlog aprovado), nunca "sempre que há fase ativa". As Fases 0 e 1
+    (concepção/refinamento) precisam que o spec-analyst escreva livremente
+    em docs/backlog/ — com a regra antiga ("existe fase ativa"), esse
+    trabalho legítimo seria bloqueado pelo próprio sistema.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        self.state("phase", "implementing")
+
+    def _escreve_spec(self):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "docs/backlog/01-x.md", "content": "# spec"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_antes_do_gate_po_1_spec_editavel(self):
+        # Fases 0 e 1: o spec-analyst PRECISA escrever o backlog.
+        self.assertEqual(self._escreve_spec().returncode, 0)
+
+    def test_depois_do_gate_po_1_spec_congelada(self):
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_spec_md_nao_e_mais_protegido_por_default(self):
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "SPEC.md", "content": "x"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0)
+
+    def test_batch_json_corrompido_falha_aberto_sem_traceback(self):
+        # batch.json corrompido/malformado não pode virar exceção não
+        # tratada num hook BLOQUEANTE: gate_po_1_passed devolve False (lado
+        # seguro, freeze desligado) e o guard sai limpo, exit 0 ou 2, nunca
+        # 1 com stack trace no stderr.
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            fh.write("{lixo")
+        r = self._escreve_spec()
+        self.assertIn(r.returncode, (0, 2))
+        self.assertNotIn("Traceback", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -101,7 +101,7 @@ SEQ_REL = os.path.join(".specgate", "seq")
 
 
 def guard_spec_lock(tool, tool_input, cwd, cfg):
-    spec_paths = cfg.get("spec_paths", ["SPEC.md", "docs/backlog"])
+    spec_paths = cfg.get("spec_paths", ["docs/backlog"])
     spec_dirs = norm_paths(cwd, spec_paths)
     if not spec_dirs:
         return
@@ -511,6 +511,24 @@ def _read_gates_seguro(cwd):
         return specgate_state.read_gates(cwd)
     except Exception:
         return []
+
+
+def _gate_po_1_passed_seguro(cwd):
+    """Wrapper fail-open sobre specgate_state.gate_po_1_passed.
+
+    Mesmo raciocínio de `_open_gates_seguro`/`_has_human_turn_seguro`:
+    módulo ausente (import falhou -> None) ou presente mas desatualizado/
+    parcial (sem gate_po_1_passed) não pode derrubar um hook bloqueante nem
+    interromper os guards seguintes em main() (destrutivo, regressão).
+    False é o lado seguro aqui: freeze desligado, nunca trava trabalho
+    legítimo do spec-analyst nas Fases 0/1.
+    """
+    if specgate_state is None:
+        return False
+    try:
+        return specgate_state.gate_po_1_passed(cwd)
+    except Exception:
+        return False
 
 
 def guard_seq_lock(tool, tool_input, cwd):
@@ -1131,7 +1149,10 @@ def main():
         phase = current_phase(cwd)
         if phase == "testing":
             guard_testing_phase(tool, tool_input, cwd, cfg)
-        if phase:
+        # O freeze precisa de um FATO EM DISCO, não de narrativa: o hook só
+        # enxerga arquivos. Antes do Gate PO 1 a spec ainda está sendo
+        # escrita pelo spec-analyst e não é contrato; depois dele, é.
+        if _gate_po_1_passed_seguro(cwd):
             guard_spec_lock(tool, tool_input, cwd, cfg)
         if tool == "Bash":
             guard_destructive(tool_input, cwd, cfg)
