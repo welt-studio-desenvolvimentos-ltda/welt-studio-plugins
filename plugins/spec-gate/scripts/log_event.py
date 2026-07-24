@@ -9,6 +9,8 @@ import os
 import sys
 import time
 
+import specgate_state
+
 MAX_LINES = 400
 
 
@@ -26,6 +28,12 @@ def main():
         "ts": time.strftime("%H:%M:%S"),
         "event": ev,
     }
+    # O seq só avança em turno real do usuário: é a prova inforjável que o
+    # gate de PO consome. Nenhum outro evento pode movê-lo.
+    if ev == "UserPromptSubmit":
+        entry["seq"] = specgate_state.bump_seq(cwd)
+    else:
+        entry["seq"] = specgate_state.read_seq(cwd)
     tool = payload.get("tool_name")
     if tool:
         entry["tool"] = tool
