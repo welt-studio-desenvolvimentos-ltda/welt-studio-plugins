@@ -73,10 +73,16 @@ def open_gates(cwd):
 
 
 def has_human_turn_since(cwd, opened_at_seq):
-    """Camada 1 do gate: houve turno REAL do usuário depois do gate abrir?
+    """Houve turno REAL do usuário depois do gate abrir?
 
-    O Claude não consegue fabricar um UserPromptSubmit, então este é o
-    único fato do sistema que ele não pode forjar.
+    Esta comparação (`seq_atual > opened_at_seq`) é só aritmética sobre o
+    contador em `.specgate/seq`; o arquivo em si é protegido apenas pela
+    camada de fricção do gate_guard (ver `guard_seq_lock`), não é à prova
+    de qualquer escrita via Bash. A propriedade genuinamente forte está em
+    QUEM incrementa esse contador: só `log_event.py`, rodando como hook no
+    evento `UserPromptSubmit`, que o Claude não consegue fabricar — por
+    isso o caminho honesto (esperar a fala real do usuário) é sempre mais
+    barato do que qualquer tentativa de forjar o contador.
     """
     try:
         return read_seq(cwd) > int(opened_at_seq)

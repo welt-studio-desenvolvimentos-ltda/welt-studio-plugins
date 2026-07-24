@@ -356,32 +356,45 @@ def _inline_write_candidates(code):
     return candidates
 
 
-# MODELO DE CAMADAS, com garantias diferentes — leia isto antes de "completar"
-# a heurística abaixo ou de julgá-la insegura:
+# MODELO DE CAMADAS — leia isto antes de "completar" a heurística abaixo ou
+# de julgá-la insegura. As duas camadas têm naturezas diferentes, e é
+# importante não confundir uma com a outra:
 #
 # 1) CAMADA DE FRICÇÃO — é esta função (write_targets) e todo o parsing de
 #    comando Bash que ela faz, incluindo o reconhecimento de interpretador
-#    logo acima. Ela encarece o desvio ACIDENTAL: o caso real que ela cobre
+#    logo acima. Ela encarece o desvio CASUAL: o caso real que ela cobre
 #    é um modelo sob pressão racionalizando um atalho ("é só um `python -c`,
 #    não é bem uma escrita de arquivo..."), não um adversário decidido a
 #    burlar o guard de propósito. Por isso reconhecemos aqui invocação de
 #    `python`/`python3 -c`, `node -e`/`--eval`, `perl -e`, `ruby -e`,
-#    `php -r` e — os mais importantes — `sh -c`/`bash -c`, que são o desvio
-#    mais provável de todos por serem o idioma natural da própria
-#    ferramenta Bash do agente. Isto NÃO é sandbox e não pretende ser: quem
-#    quiser burlar (escrever o caminho byte a byte, base64, um segundo
-#    processo, etc.) burla. Não perseguimos esse alvo infinito aqui.
+#    `php -r`, `sh -c`/`bash -c` — o desvio mais provável de todos por ser o
+#    idioma natural da própria ferramenta Bash do agente —, além de
+#    `dd of=`, `install` e heredoc de interpretador. Isto NÃO é sandbox e
+#    não pretende ser: quem quiser burlar de propósito (eval, base64 | sh,
+#    awk 'BEGIN{print > arquivo}', indireção por variável, substituição de
+#    comando no alvo, escrever o caminho byte a byte, um segundo processo,
+#    etc.) burla — inclusive o PRÓPRIO arquivo `.specgate/seq` só está
+#    protegido por esta camada (ver `guard_seq_lock` abaixo: qualquer
+#    escrita que `write_targets` reconheça é bloqueada, mas o que
+#    `write_targets` NÃO reconhece passa). Não perseguimos esse alvo
+#    infinito aqui.
 #
-# 2) CAMADA FORTE — é outra: a validação do `seq` na escrita do gate.json
-#    (`guard_gate_clear`, que consome `specgate_state.has_human_turn_since`),
-#    que não depende de parsing nenhum, e sim de existir um turno REAL do
-#    usuário registrado no log de eventos desde que o gate abriu. Nenhum
-#    interpretador, disfarce de comando ou codificação contorna aquela,
-#    porque o Claude não fabrica um UserPromptSubmit.
+# 2) A PROPRIEDADE GENUINAMENTE FORTE — não é nenhum arquivo de estado em
+#    si (todos são protegidos só pela camada de fricção acima). É o EVENTO
+#    `UserPromptSubmit`: o Claude não consegue fabricá-lo, e `.specgate/seq`
+#    só avança dentro de `log_event.py`, rodando como HOOK nesse evento —
+#    nunca como tool call do agente, então nunca passa por este guard
+#    PreToolUse. `has_human_turn_since` (consumida por `guard_gate_clear`)
+#    compara esse contador contra o valor registrado na abertura do gate.
+#    Por isso o caminho HONESTO — pedir ao usuário e esperar a resposta
+#    real — é sempre o de MENOR resistência: forjar exige Bash cada vez
+#    mais contorcido (que a camada de fricção acima encarece a cada
+#    rodada), enquanto esperar o turno real custa zero.
 #
 # Por isso "fechar o barato" (cobrir os interpretadores óbvios de escrita
-# inline) é o nível de investimento certo para esta camada — não vale a
-# pena, e seria enganoso, tentar transformar isto num parser de verdade.
+# inline, mais dd/install/heredoc) é o nível de investimento certo para a
+# camada de fricção — não vale a pena, e seria enganoso, tentar transformar
+# isto num parser de verdade.
 #
 # CAMINHO FUTURO DESCARTADO (para quem for mexer aqui depois): validar a
 # legitimidade da fase no PONTO DE CONSUMO (quem lê .specgate/phase) em vez
@@ -390,9 +403,9 @@ def _inline_write_candidates(code):
 # continuar livre para avançar o PBI-04, então bloquear ferramentas de
 # trabalho globalmente enquanto houver QUALQUER gate aberto quebraria a
 # fila. A versão por-PBI disso exigiria rastrear qual arquivo pertence a
-# qual PBI, que é o redesign caro. Se um dia for necessário fechar essa
-# parede de verdade (camada forte de verdade, não fricção), o caminho é
-# esse rastreamento — não mais parsing de comando.
+# qual PBI, que é o redesign caro. Se um dia for necessário reduzir ainda
+# mais esta fricção (não uma parede impossível de furar — só mais cara de
+# contornar), o caminho é esse rastreamento — não mais parsing de comando.
 def write_targets(tool, tool_input):
     """Caminhos que esta chamada pretende escrever.
 
@@ -478,40 +491,43 @@ def _read_gates_seguro(cwd):
 
 
 def guard_seq_lock(tool, tool_input, cwd):
-    """Bloqueia qualquer escrita do agente em .specgate/seq.
+    """Bloqueia, na medida da camada de fricção, escrita do agente em
+    .specgate/seq via tool call.
 
     `.specgate/seq` é o contador de turnos que `has_human_turn_since` usa
-    para provar que um `UserPromptSubmit` real aconteceu — é a raiz da
-    camada forte de todo o gate de PO (ver o comentário "MODELO DE CAMADAS"
-    acima de `write_targets`). O ÚNICO caminho legítimo de escrita é
-    `log_event.py`, disparado como HOOK no evento `UserPromptSubmit`; por
-    rodar como hook (e não como tool call do agente), ele nunca passa por
-    este guard PreToolUse, então bloquear aqui não afeta o incremento real.
-    Qualquer escrita partindo de uma tool call — Write, Edit, ou Bash via
-    redirecionamento/tee/sed -i/mv/cp/truncate/interpretador inline, tudo
-    já reconhecido por `write_targets` — forjaria essa prova e por isso é
-    bloqueada incondicionalmente, sem exceção e sem depender de haver gate
-    aberto.
+    para checar se um `UserPromptSubmit` real aconteceu desde a abertura do
+    gate. A propriedade genuinamente forte não é este ARQUIVO — como
+    qualquer arquivo, ele só é protegido pelo que `write_targets` reconhece
+    (ver "MODELO DE CAMADAS" acima) — é o EVENTO: o Claude não fabrica um
+    `UserPromptSubmit`, e o incremento de verdade só acontece dentro de
+    `log_event.py`, disparado como HOOK nesse evento; por rodar como hook
+    (e não como tool call do agente), ele nunca passa por este guard
+    PreToolUse, então bloquear aqui não afeta o incremento real. Qualquer
+    escrita partindo de uma tool call — Write, Edit, ou Bash reconhecido
+    por `write_targets` (redirecionamento/tee/sed -i/mv/cp/rm/truncate/
+    dd/install/interpretador inline ou heredoc) — forjaria essa prova de
+    turno, por isso é bloqueada aqui, independente de haver gate aberto.
     """
     if not any(_same_file(t, cwd, SEQ_REL) for t in write_targets(tool, tool_input)):
         return
     block(
         "[spec-gate] ESCRITA EM .specgate/seq BLOQUEADA. Este contador de "
-        "turnos é mantido exclusivamente pelo sistema (o hook log_event.py, "
-        "disparado no evento UserPromptSubmit) e nunca pode ser escrito "
-        "pelo agente: ele é a prova inforjável de que o usuário falou, da "
-        "qual depende todo o gate de PO. Escrever aqui diretamente (Write, "
-        "Edit, Bash, ou qualquer interpretador) forjaria essa prova. NÃO "
-        "tente contornar por outro caminho — se você precisa que o usuário "
-        "fale, peça e aguarde a resposta real."
+        "turnos é mantido pelo sistema (o hook log_event.py, disparado no "
+        "evento UserPromptSubmit) e não deve ser escrito pelo agente: "
+        "escrevê-lo à mão forjaria a prova de que o usuário falou, da qual "
+        "depende o gate de PO. NÃO tente contornar por outro caminho — se "
+        "você precisa que o usuário fale, peça e aguarde a resposta real."
     )
 
 
 def guard_po_gate(tool, tool_input, cwd):
     """Chokepoint: com gate de PO aberto, a transição de fase fica travada.
 
-    Toda transição de fase passa por escrita em .specgate/phase, então
-    bloquear esse arquivo impede fisicamente o fluxo de avançar.
+    Toda transição de fase LEGÍTIMA passa por escrita em .specgate/phase
+    reconhecida por `write_targets`, então bloquear esse arquivo encarece
+    o fluxo de avançar sem decisão do PO — é a mesma camada de fricção
+    descrita em "MODELO DE CAMADAS" acima de `write_targets`, não uma
+    barreira à prova de qualquer comando Bash.
     """
     gates = _open_gates_seguro(cwd)
     if not gates:
@@ -649,8 +665,8 @@ def _mutacao_invalida(cwd, anteriores, novos):
        mesmo `opened_at_seq`); QUALQUER outra diferença — inclusive trocar
        de um status decidido para outro (flip-flop reprovado<->aprovado
        sem turno novo) ou tentar reabrir como 'aguardando-po', mesmo com
-       `opened_at_seq` fresco — é bloqueada aqui, incondicionalmente, sem
-       nem olhar `seq_atual`. Reverter uma decisão não é reescrever a
+       `opened_at_seq` fresco — é bloqueada aqui, sem nem olhar
+       `seq_atual`. Reverter uma decisão não é reescrever a
        chave: é semanticamente abrir um gate NOVO, o que só é possível
        numa escrita SEPARADA em que a chave já não aparece no estado
        anterior (categoria 3, que aí sim exige `opened_at_seq >= seq_atual`
@@ -860,9 +876,10 @@ def guard_gate_clear(tool, tool_input, cwd):
     2. Chave já estava DECIDIDA antes (status != 'aguardando-po') — o
        CORAÇÃO deste fix: congelada. Só a identidade exata (mesmo status,
        mesmo `opened_at_seq`) sobrevive; qualquer outra mutação nesta
-       MESMA escrita é bloqueada, incondicionalmente — inclusive trocar de
-       um status decidido para outro (o flip-flop reprovado<->aprovado que
-       este fix fecha) e tentar reabrir como 'aguardando-po'. Reverter uma
+       MESMA escrita é bloqueada, sem depender de `seq_atual` — inclusive
+       trocar de um status decidido para outro (o flip-flop
+       reprovado<->aprovado que este fix fecha) e tentar reabrir como
+       'aguardando-po'. Reverter uma
        decisão não é reescrever a chave: é abrir um gate NOVO, que só
        existe numa escrita SEPARADA em que a chave já não aparece no
        anterior (cai então na categoria 3, que exige fala do PO). Deletar
@@ -898,8 +915,12 @@ def guard_gate_clear(tool, tool_input, cwd):
     4. `_decided_without_turn`: decisão sem turno humano REAL posterior ao
        `opened_at_seq` do gate (cobre categorias 1 e 3: gate que estava
        aberto decidido sem turno, e chave fabricada do zero já decidida —
-       inclui chave duplicada ambígua, categoria 4). PAREDE mecânica: o
-       Claude não fabrica um UserPromptSubmit, então isto é inviolável.
+       inclui chave duplicada ambígua, categoria 4). Esta é a propriedade
+       genuinamente forte do gate: o Claude não fabrica um
+       UserPromptSubmit, então o caminho honesto — pedir a decisão ao PO e
+       esperar a resposta real — é sempre mais barato que forjá-la (a
+       detecção da ESCRITA em si, feita por `write_targets` acima, é a
+       camada de fricção, não uma parede).
 
     LIMITE CONHECIDO: se a fala do PO SUSTENTA a decisão daquele gate
     específico, o hook não tem como saber — isso é semântica, e hook não lê
@@ -991,11 +1012,11 @@ def guard_gate_clear(tool, tool_input, cwd):
     # aprovado sem turno novo — o furo relatado, em que o `opened_at_seq`
     # antigo continuava validando contra um `seq` global que só precisou
     # ultrapassá-lo UMA vez) quanto tentar reabrir a chave como
-    # 'aguardando-po', mesmo com `opened_at_seq` fresco. Bloqueado sempre,
-    # incondicional a `seq_atual`: gate decidido é imutável, ponto. Mudar
-    # de ideia exige abrir um gate NOVO numa escrita separada — o que
-    # cai na categoria 3, essa sim condicionada a `opened_at_seq >=
-    # seq_atual` (fala do PO).
+    # 'aguardando-po', mesmo com `opened_at_seq` fresco. Bloqueado nesta
+    # checagem sem depender de `seq_atual`: gate decidido é tratado como
+    # imutável. Mudar de ideia exige abrir um gate NOVO numa escrita
+    # separada — o que cai na categoria 3, essa sim condicionada a
+    # `opened_at_seq >= seq_atual` (fala do PO).
     if ofensores_decidido:
         nomes = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
