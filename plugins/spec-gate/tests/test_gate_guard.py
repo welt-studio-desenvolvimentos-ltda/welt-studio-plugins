@@ -446,6 +446,142 @@ class GateClearTest(GuardBase):
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
 
+class GateDecididoImutavelTest(GuardBase):
+    """Fecha a ÚLTIMA brecha: uma vez decidido, um gate vira registro de
+    auditoria congelado (categoria 2 do modelo unificado). Antes deste fix,
+    a proteção de imutabilidade só cobria gates 'aguardando-po' no estado
+    anterior — assim que a chave saía dessa lista pela primeira vez (uma
+    decisão legítima), ela ficava livre para ser reescrita à vontade, porque
+    `_decided_without_turn` validava contra o `opened_at_seq` ORIGINAL
+    registrado na abertura, e o `seq` global só precisava ultrapassar aquele
+    valor UMA vez — não a cada reescrita. Reproduzido ao vivo: 8 flip-flops
+    seguidos entre 'aprovado' e 'reprovado', seq nunca avança, todos rc=0.
+    """
+
+    def _escreve_gate(self, content):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/gate.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_flip_flop_reprovado_para_aprovado_sem_turno_novo_e_bloqueado(self):
+        # O FURO relatado pela auditoria, na forma mais direta: gate abre em
+        # 5, decide REPROVADO com turno real (seq=10) — decisão legítima.
+        # Em seguida, SEM nenhum UserPromptSubmit novo (seq continua 10), o
+        # Claude tenta reescrever a MESMA chave como APROVADO. Isto precisa
+        # ser bloqueado: gate decidido é imutável, e inverter o veredito sem
+        # fala nova do PO é exatamente a auto-liberação que este fix fecha.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 5},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DECIDIDO É IMUTÁVEL BLOQUEADO", r.stderr)
+
+    def test_flip_flop_repetido_nunca_passa_mesmo_sem_seq_avancar(self):
+        # Reprodução fiel do relato da auditoria: 8 tentativas alternadas de
+        # inverter o veredito, todas na mesma sessão, seq nunca avança. Como
+        # o Claude Code só persiste a escrita quando o hook libera (rc=0),
+        # simulamos isso aqui: só reescrevemos gate.json em disco quando o
+        # guard permite. O invariante de verdade não é "toda tentativa
+        # individual bloqueia" (uma tentativa que repete o valor já em
+        # disco é uma reescrita idêntica, legitimamente permitida sem
+        # turno) — é que o STATUS EM DISCO nunca sai do valor decidido
+        # originalmente ("reprovado"): nenhum flip real e efetivo acontece.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        status = "aprovado"
+        gate_path = os.path.join(self.tmp, ".specgate", "gate.json")
+        for i in range(8):
+            content = json.dumps([
+                {"checkpoint": "x", "status": status, "opened_at_seq": 5},
+            ])
+            r = self._escreve_gate(content)
+            if r.returncode == 0:
+                self.state("gate.json", content)  # Write real teria persistido
+            # Invariante checado A CADA iteração (não só no final): o status
+            # em disco nunca pode ser diferente de "reprovado", senão um
+            # flip de verdade escapou. Checar só ao final deixaria passar um
+            # flip que fosse desfeito por coincidência de paridade do loop.
+            with open(gate_path, encoding="utf-8") as fh:
+                gates_em_disco = json.load(fh)
+            self.assertEqual(
+                gates_em_disco[0]["status"], "reprovado",
+                msg=f"iteração {i}: status em disco mudou para "
+                    f"{gates_em_disco[0]['status']!r} sem turno novo (rc={r.returncode})",
+            )
+            status = "reprovado" if status == "aprovado" else "aprovado"
+
+    def test_alterar_opened_at_seq_de_gate_decidido_mantendo_status_e_bloqueado(self):
+        # Segunda forma do mesmo furo: manter o status decidido idêntico mas
+        # forjar um `opened_at_seq` novo. Isto corrompe o carimbo temporal
+        # que qualquer auditoria futura usaria para saber quando a decisão
+        # foi tomada, sem exigir turno humano nenhum.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 99},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DECIDIDO É IMUTÁVEL BLOQUEADO", r.stderr)
+
+    def test_reabrir_gate_decidido_com_opened_at_seq_fresco_e_bloqueado(self):
+        # Forma mais sutil: reabrir como 'aguardando-po' usando um
+        # opened_at_seq FRESCO (igual ao seq_atual, não herdado do passado)
+        # na MESMA escrita que muda o status. Mesmo satisfazendo a exigência
+        # `>= seq_atual` da categoria de abertura, isto ainda é mutação de um
+        # registro congelado — a única forma legítima de "mudar de ideia" é
+        # deletar a chave (limpeza) numa escrita e abri-la de novo como
+        # chave nova (sem histórico) em outra.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aguardando-po", "opened_at_seq": 15},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DECIDIDO É IMUTÁVEL BLOQUEADO", r.stderr)
+
+    def test_gate_decidido_reescrito_identico_continua_permitido(self):
+        # Não-regressão/sanidade: reescrever a MESMA chave decidida com
+        # status e opened_at_seq idênticos (ex.: rewrite do arquivo inteiro
+        # que só re-serializa o JSON) não é mutação nenhuma — precisa
+        # continuar liberado.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rewrite_preserva_gate_decidido_idêntico_enquanto_decide_outro_aberto(self):
+        # Não-regressão central: um gate JÁ decidido (aprovado) fica
+        # intocado e idêntico na mesma escrita em que OUTRO gate, aberto,
+        # é decidido com turno humano real. A imutabilidade do primeiro não
+        # pode travar a decisão legítima do segundo.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ja-decidido", "status": "aprovado", "opened_at_seq": 3},
+            {"checkpoint": "aberto", "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "11")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "ja-decidido", "status": "aprovado", "opened_at_seq": 3},
+            {"checkpoint": "aberto", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+
 class AberturaAntedatadaTest(GuardBase):
     """Fecha o furo: opened_at_seq é escrito pelo próprio agente ao abrir um
     gate, e nada validava esse valor. Abrir com opened_at_seq no passado
@@ -502,16 +638,20 @@ class AberturaAntedatadaTest(GuardBase):
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
     def test_reabrir_chave_decidida_com_opened_at_seq_historico_e_bloqueada(self):
-        # Ataque real (Aresta A, item 2): uma chave já DECIDIDA (aprovado,
-        # opened_at_seq=10) é reescrita de volta como aguardando-po com o
-        # MESMO opened_at_seq=10, herdado do valor histórico, quando o seq
-        # atual já passou de 10. Antes do fix isto "passava como
-        # preservação" — a checagem antiga só olhava se o VALOR batia com
-        # QUALQUER entrada anterior da chave, ignorando que aquela entrada
-        # estava DECIDIDA, não aberta — e reabria a janela: uma decisão
-        # seguinte validaria contra o opened_at_seq=10 já ultrapassado, sem
-        # exigir turno novo do PO. Reabertura de chave decidida precisa ser
-        # tratada como abertura nova (exige opened_at_seq >= seq_atual).
+        # Ataque real: uma chave já DECIDIDA (aprovado, opened_at_seq=10) é
+        # reescrita de volta como aguardando-po com o MESMO opened_at_seq=10,
+        # herdado do valor histórico, quando o seq atual já passou de 10.
+        # Antes deste fix isto "passava como preservação" — a checagem
+        # antiga só olhava se o VALOR batia com QUALQUER entrada anterior da
+        # chave, ignorando que aquela entrada estava DECIDIDA, não aberta —
+        # e reabria a janela: uma decisão seguinte validaria contra o
+        # opened_at_seq=10 já ultrapassado, sem exigir turno novo do PO.
+        #
+        # RECLASSIFICADO sob o modelo unificado (categoria 2, o coração
+        # deste fix): reabrir uma chave decidida é bloqueado incondicional a
+        # seq_atual, pela mesma regra que congela qualquer outra mutação da
+        # chave (não só a antedatada) — por isso a mensagem agora é a de
+        # imutabilidade do gate decidido, não mais a de abertura antedatada.
         self.state("gate.json", json.dumps([
             {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
         ]))
@@ -520,7 +660,7 @@ class AberturaAntedatadaTest(GuardBase):
             {"checkpoint": "x", "status": "aguardando-po", "opened_at_seq": 10},
         ]))
         self.assertEqual(r.returncode, 2)
-        self.assertIn("ABERTURA DE GATE ANTEDATADA BLOQUEADA", r.stderr)
+        self.assertIn("GATE DECIDIDO É IMUTÁVEL BLOQUEADO", r.stderr)
 
     def test_rewrite_com_opened_at_seq_rebaixado_em_gate_aberto_e_bloqueado(self):
         # Aresta A, item 1 (robustez/não-regressão): mesmo mantendo o status
