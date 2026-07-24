@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import specgate_state as st
@@ -28,6 +29,26 @@ class StateTest(unittest.TestCase):
         self.assertEqual(st.bump_seq(self.tmp), 1)
         self.assertEqual(st.bump_seq(self.tmp), 2)
         self.assertEqual(st.read_seq(self.tmp), 2)
+
+    def test_bump_seq_nao_corrompe_arquivo_se_replace_falhar(self):
+        """Escrita atômica: uma falha no meio do rename não deve deixar o
+        arquivo "seq" truncado/regredido — o valor anterior tem que sobreviver.
+
+        Isso prova o que uma escrita direta (open "w" + write) não garante:
+        com kill -9/disco cheio no meio, "seq" acabaria truncado, read_seq
+        devolveria 0 e o gate travaria para sempre (nunca mais alcança o
+        opened_at_seq antigo).
+        """
+        self.assertEqual(st.bump_seq(self.tmp), 1)
+        with mock.patch("specgate_state.os.replace", side_effect=OSError("disco cheio")):
+            resultado = st.bump_seq(self.tmp)
+        # bump_seq falha graciosamente (fail-open) e devolve o valor persistido
+        self.assertEqual(resultado, 1)
+        # o arquivo "seq" original não foi tocado pela escrita que falhou
+        self.assertEqual(st.read_seq(self.tmp), 1)
+        # nenhum temporário sobra no diretório de estado
+        restantes = os.listdir(os.path.join(self.tmp, ".specgate"))
+        self.assertEqual(restantes, ["seq"])
 
     def test_read_gates_tolera_dict_unico(self):
         self._write("gate.json", json.dumps({"checkpoint": "testes", "status": "aguardando-po"}))

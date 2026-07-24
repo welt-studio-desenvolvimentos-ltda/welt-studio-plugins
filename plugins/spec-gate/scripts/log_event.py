@@ -9,7 +9,14 @@ import os
 import sys
 import time
 
-import specgate_state
+try:
+    # O import roda antes de sabermos se o projeto usa spec-gate. Uma
+    # instalação corrompida ou checkout parcial não pode derrubar o hook em
+    # QUALQUER evento, inclusive projetos que nem tem .specgate.json — por
+    # isso o import é à prova de falha e o módulo vira None quando ausente.
+    import specgate_state
+except ImportError:
+    specgate_state = None
 
 MAX_LINES = 400
 
@@ -30,10 +37,13 @@ def main():
     }
     # O seq só avança em turno real do usuário: é a prova inforjável que o
     # gate de PO consome. Nenhum outro evento pode movê-lo.
-    if ev == "UserPromptSubmit":
-        entry["seq"] = specgate_state.bump_seq(cwd)
-    else:
-        entry["seq"] = specgate_state.read_seq(cwd)
+    # Sem o módulo (import falhou), seguimos logando o resto sem o campo seq
+    # em vez de explodir — fail-open também aqui.
+    if specgate_state is not None:
+        if ev == "UserPromptSubmit":
+            entry["seq"] = specgate_state.bump_seq(cwd)
+        else:
+            entry["seq"] = specgate_state.read_seq(cwd)
     tool = payload.get("tool_name")
     if tool:
         entry["tool"] = tool

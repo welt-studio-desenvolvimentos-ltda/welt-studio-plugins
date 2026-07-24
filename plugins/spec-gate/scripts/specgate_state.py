@@ -7,6 +7,7 @@ caso de erro — nenhum problema de estado pode travar a sessão do Claude.
 """
 import json
 import os
+import tempfile
 
 STATE_DIR = ".specgate"
 
@@ -27,10 +28,26 @@ def read_seq(cwd):
 def bump_seq(cwd):
     """Incrementa e devolve o novo valor. Só o UserPromptSubmit chama isto."""
     n = read_seq(cwd) + 1
+    state_dir = _p(cwd)
     try:
-        os.makedirs(_p(cwd), exist_ok=True)
-        with open(_p(cwd, "seq"), "w", encoding="utf-8") as fh:
-            fh.write(str(n))
+        os.makedirs(state_dir, exist_ok=True)
+        # Escrita atômica: grava num temporário no mesmo diretório e substitui
+        # por cima com os.replace (atômico em POSIX e Windows). Uma
+        # interrupção no meio (kill -9, disco cheio) nunca deixa o arquivo
+        # "seq" truncado — ou o rename acontece inteiro, ou o arquivo antigo
+        # permanece intacto. Sem isso, um "seq" truncado vira ValueError em
+        # read_seq, o contador volta a 0 e regride, travando gates para sempre.
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, prefix=".seq.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(str(n))
+            os.replace(tmp_path, _p(cwd, "seq"))
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
     except OSError:
         return read_seq(cwd)
     return n

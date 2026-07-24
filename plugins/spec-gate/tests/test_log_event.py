@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,9 +33,17 @@ class LogEventTest(unittest.TestCase):
         self.assertEqual(st.read_seq(self.tmp), 2)
 
     def test_outros_eventos_nao_incrementam_seq(self):
+        # Baseline não-zero: se a implementação zerasse o contador a cada
+        # evento, a asserção final (comparada com 0) passaria mesmo estando
+        # errada. Estabelecer um valor != 0 antes garante que a asserção só
+        # passa se Stop/PostToolUse de fato preservarem o valor.
+        run_hook({"hook_event_name": "UserPromptSubmit", "prompt": "baseline", "cwd": self.tmp}, self.tmp)
+        baseline = st.read_seq(self.tmp)
+        self.assertNotEqual(baseline, 0)
+
         run_hook({"hook_event_name": "Stop", "cwd": self.tmp}, self.tmp)
         run_hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": self.tmp}, self.tmp)
-        self.assertEqual(st.read_seq(self.tmp), 0)
+        self.assertEqual(st.read_seq(self.tmp), baseline)
 
     def test_sem_specgate_json_nao_cria_estado(self):
         vazio = tempfile.mkdtemp()
@@ -46,6 +55,32 @@ class LogEventTest(unittest.TestCase):
         with open(os.path.join(self.tmp, ".specgate", "events.jsonl"), encoding="utf-8") as fh:
             entrada = json.loads(fh.readline())
         self.assertEqual(entrada["seq"], 1)
+
+    def test_sai_zero_mesmo_sem_specgate_state_disponivel(self):
+        """Import à prova de falha: instalação corrompida não pode derrubar o hook.
+
+        Copiamos só o log_event.py para um diretório isolado, sem
+        specgate_state.py ao lado, simulando um checkout parcial/corrompido.
+        Python inclui o diretório do próprio script em sys.path, então o
+        import falhará de verdade nesse processo novo.
+        """
+        isolado = tempfile.mkdtemp()
+        copia = os.path.join(isolado, "log_event.py")
+        shutil.copyfile(LOG_EVENT, copia)
+        self.assertFalse(os.path.exists(os.path.join(isolado, "specgate_state.py")))
+
+        result = subprocess.run(
+            [sys.executable, copia],
+            input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "oi", "cwd": self.tmp}),
+            capture_output=True, text=True, cwd=self.tmp,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stderr: {result.stderr}")
+
+        # o resto do logging continua funcionando mesmo sem o campo seq
+        with open(os.path.join(self.tmp, ".specgate", "events.jsonl"), encoding="utf-8") as fh:
+            entrada = json.loads(fh.readline())
+        self.assertNotIn("seq", entrada)
+        self.assertEqual(entrada["event"], "UserPromptSubmit")
 
 
 if __name__ == "__main__":
