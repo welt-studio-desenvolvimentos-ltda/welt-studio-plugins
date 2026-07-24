@@ -513,75 +513,132 @@ def _opened_at_seq_int(g):
         return None
 
 
-def _abertura_invalida(cwd, anteriores, novos):
-    """Gates 'aguardando-po' no conteúdo novo cuja abertura é antedatada.
+def _anterior_aberto_da_chave(anteriores_da_chave):
+    """A entrada ANTERIOR desta chave cujo status era 'aguardando-po', se
+    houver — None se a chave nunca existiu ou só existia já decidida.
 
-    Fecha o furo: abrir um gate com `opened_at_seq` no passado (menor que o
-    `seq` atual) tornaria a aprovação seguinte forjável, porque o `seq`
-    "já passou" daquele valor por turnos ANTERIORES à abertura — nenhum
-    turno novo do PO seria necessário para liberar. `opened_at_seq` de um
-    gate recém-aberto não pode ser "carimbado no passado"; só pode ser o
-    `seq` atual (ou maior, se o comando preferir ser conservador).
+    É o fato que distingue PRESERVAÇÃO real de reabertura disfarçada: só
+    importa que a chave estava com o MESMO status logo antes desta escrita,
+    nunca "existiu alguma vez com esse valor" (que é o que a versão antiga
+    checava, e é exatamente o furo da chave decidida reaberta).
+    """
+    for a in anteriores_da_chave:
+        if a.get("status") == "aguardando-po":
+            return a
+    return None
 
-    Um gate 'aguardando-po' é RECÉM-ABERTO quando sua chave (checkpoint,
-    pbi), comparada contra o estado ANTERIOR completo em disco
-    (`read_gates`, não só os abertos):
-      (a) não existia antes, OU
-      (b) existia com um `opened_at_seq` DIFERENTE (reabertura/rebase do
-          valor).
-    Só para esses dois casos exigimos `opened_at_seq >= seq_atual`.
 
-    Uma entrada 'aguardando-po' cuja chave já existia antes com o MESMO
-    `opened_at_seq` está sendo apenas PRESERVADA num rewrite (ex.: a
-    escrita mexe em outro gate e mantém este idêntico) — não é abertura
-    nova, então não exigimos nada dela aqui, mesmo que `seq_atual` já
-    tenha avançado desde então (houve turno, mas ele não é sobre ESTE
-    gate; travar a preservação quebraria rewrites legítimos).
+def _mutacao_invalida(cwd, anteriores, novos):
+    """Impõe a imutabilidade de `opened_at_seq` de um gate aberto nas DUAS
+    direções em que ele pode mudar de forma, devolvendo
+    `(ofensores_abertura, ofensores_decisao)`.
+
+    MODELO UNIFICADO: um gate aberto com `opened_at_seq = S` só ENTRA
+    (abre/reabre) em 'aguardando-po' com `opened_at_seq >= seq_atual`
+    (nunca no passado), e só SAI de 'aguardando-po' mudando de status e
+    MANTENDO `opened_at_seq = S` — nunca alterando o valor na mesma escrita
+    que decide.
+
+    ofensores_abertura — entradas 'aguardando-po' em `novos` cuja
+    abertura/reabertura é antedatada. PRESERVAÇÃO real (a única isenta da
+    exigência `>= seq_atual`) exige as DUAS coisas: a chave já estava
+    'aguardando-po' no estado anterior completo (`anteriores`, de
+    `read_gates` — não só as abertas) E o `opened_at_seq` é IDÊNTICO ao
+    anterior. Checar só o valor (sem o status anterior) é o furo antigo:
+    permitia "preservar" com o `opened_at_seq` REBAIXADO frente ao valor de
+    disco corrente sem cair na checagem — mas como o `seq` é monotônico e
+    já alcançou o valor original na abertura, rebaixar nunca sobrevive à
+    exigência `>= seq_atual` de qualquer forma. O furo que ISTO fecha de
+    verdade é outro: uma chave já DECIDIDA (ex.: aprovado,
+    opened_at_seq=10) reescrita de volta como 'aguardando-po' com o MESMO
+    opened_at_seq=10 herdado do valor histórico — a checagem antiga via
+    "valor bate com alguma entrada anterior da chave" e deixava passar como
+    preservação, mesmo a entrada anterior estando DECIDIDA, não aberta.
+    Isso reabria a janela sem exigir turno novo do PO, porque uma decisão
+    seguinte validaria contra aquele `opened_at_seq` já ultrapassado.
+    Qualquer caso que não seja a preservação exata cai na mesma regra de
+    abertura: `opened_at_seq >= seq_atual`.
+
+    ofensores_decisao — entradas DECIDIDAS (status != 'aguardando-po') em
+    `novos` cuja chave estava 'aguardando-po' no estado anterior com um
+    `opened_at_seq` DIFERENTE do declarado agora. O `opened_at_seq` é o
+    carimbo temporal que a checagem de turno humano usa; alterá-lo (para
+    baixo OU para cima) na MESMA escrita que decide reescreveria esse
+    carimbo sem que o PO tenha visto o valor novo — rebaixar tornaria a
+    aprovação forjável (o `has_human_turn_since` seguinte validaria contra
+    um valor menor, mais fácil de satisfazer), e mesmo subir corrompe o
+    registro que uma auditoria posterior confiaria.
     """
     anteriores_por_chave = {}
     for g in anteriores:
         anteriores_por_chave.setdefault(_gate_key(g), []).append(g)
 
     seq_atual = _seq_atual_seguro(cwd)
-    ofensores = []
+    ofensores_abertura = []
+    ofensores_decisao = []
     for g in novos:
-        if g.get("status") != "aguardando-po":
-            continue
-        opened_at_seq = _opened_at_seq_int(g)
-        if opened_at_seq is None:
-            # Malformado (string/nulo/etc.): não dá para confiar no valor.
-            # Lado seguro é bloquear, nunca supor que está ok.
-            ofensores.append(g)
-            continue
-        anteriores_da_chave = anteriores_por_chave.get(_gate_key(g), [])
-        preservado = any(
-            _opened_at_seq_int(a) == opened_at_seq for a in anteriores_da_chave
+        chave = _gate_key(g)
+        anteriores_da_chave = anteriores_por_chave.get(chave, [])
+        anterior_aberto = _anterior_aberto_da_chave(anteriores_da_chave)
+        anterior_aberto_seq = (
+            _opened_at_seq_int(anterior_aberto) if anterior_aberto is not None else None
         )
-        if preservado:
-            continue
-        if opened_at_seq < seq_atual:
-            ofensores.append(g)
-    return ofensores
+        opened_at_seq = _opened_at_seq_int(g)
+
+        if g.get("status") == "aguardando-po":
+            if opened_at_seq is None:
+                # Malformado (string/nulo/etc.): não dá para confiar no
+                # valor. Lado seguro é bloquear, nunca supor que está ok.
+                ofensores_abertura.append(g)
+                continue
+            if anterior_aberto is not None and anterior_aberto_seq == opened_at_seq:
+                continue  # preservação genuína: nada a exigir
+            if opened_at_seq < seq_atual:
+                ofensores_abertura.append(g)
+        else:
+            if anterior_aberto is not None and opened_at_seq != anterior_aberto_seq:
+                ofensores_decisao.append(g)
+
+    return ofensores_abertura, ofensores_decisao
+
+
+def _gates_deletados_indevidamente(abertos, novos):
+    """Gates que estavam 'aguardando-po' e desaparecem da escrita nova.
+
+    Fecha a Aresta B: o chokepoint deste guard é "gate aberto bloqueia
+    escrita na phase", mas se o gate.json for esvaziado, truncado ou tiver
+    a chave simplesmente omitida, não há mais gate aberto e a phase
+    destrava — sem que o PO tenha decidido nada. A decisão legítima MUDA o
+    status do gate (aprovado/reprovado), preservando a entrada como
+    registro; nunca a remove. Por isso isto bloqueia SEMPRE que uma chave
+    aberta some, mesmo com turno humano presente — "apagar não é decidir".
+    Deletar/omitir uma chave que já estava DECIDIDA antes (não em
+    `abertos`) é limpeza legítima e não entra aqui.
+    """
+    novos_chaves = {_gate_key(g) for g in novos}
+    return [g for g in abertos if _gate_key(g) not in novos_chaves]
 
 
 def _decided_without_turn(cwd, abertos, anteriores, novos):
     """Gates que esta escrita libera efetivamente sem turno humano posterior.
 
-    Cobre três formas de liberação sem turno, todas sobre CHAVE
+    Cobre duas formas de liberação sem turno, ambas sobre CHAVE
     (checkpoint, pbi), nunca confiando em qual entrada "sobrevive" num dict
-    comum:
+    comum (a deleção pura de um gate aberto — a TERCEIRA forma — é a Aresta
+    B e é tratada à parte por `_gates_deletados_indevidamente`, chamada
+    antes desta função por `guard_gate_clear`; aqui só entram chaves que
+    CONTINUAM presentes em `novos`):
 
-    1. Gate aberto some do conteúdo novo (apagado) -> liberação.
-    2. Uma chave tem UMA SÓ entrada em `novos` e ela não é "aguardando-po"
+    1. Uma chave tem UMA SÓ entrada em `novos` e ela não é "aguardando-po"
        -> decisão.
-    3. Uma chave tem MÚLTIPLAS entradas em `novos` (chave duplicada) e nem
+    2. Uma chave tem MÚLTIPLAS entradas em `novos` (chave duplicada) e nem
        todas são "aguardando-po" -> ambíguo, tratado como decisão. Isto
        fecha o smuggling por chave duplicada: um dict comum
        (`{chave: g}`) deixaria só a última entrada sobreviver e, se ela for
        "aguardando-po", uma entrada "aprovado" fabricada passaria junto sem
        jamais ser examinada.
 
-    Toda "decisão" (item 2 ou 3) só é aceita se a MESMA chave já existia no
+    Toda "decisão" (item 1 ou 2) só é aceita se a MESMA chave já existia no
     estado anterior COMPLETO (`anteriores`, de read_gates — aberto ou já
     decidido antes, não só as abertas). Uma decisão sobre uma chave que
     nunca foi aberta é uma aprovação que o PO jamais pediu, e por isso é
@@ -590,7 +647,10 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
 
     A validação de turno em si usa sempre o `opened_at_seq` do gate ANTERIOR
     em disco (do `abertos`, ou de `anteriores` se a chave já existia mas não
-    estava aberta) — nunca o valor autodeclarado no conteúdo novo.
+    estava aberta) — nunca o valor autodeclarado no conteúdo novo (esse
+    valor autodeclarado, quando a chave estava aberta, já foi validado à
+    parte por `_mutacao_invalida`: se ele divergir do anterior, a escrita
+    já terá sido bloqueada antes de chegar aqui).
     """
     abertos_por_chave = {_gate_key(g): g for g in abertos}
     anteriores_por_chave = {_gate_key(g): g for g in anteriores}
@@ -605,13 +665,7 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
         anterior_aberto = abertos_por_chave.get(chave)
 
         if entradas is None:
-            # Sumiu do conteúdo novo: só é liberação se este gate estava
-            # aberto (apagar um já decidido antes não passa por aqui).
-            if anterior_aberto is not None and not _has_human_turn_seguro(
-                cwd, anterior_aberto.get("opened_at_seq", 0)
-            ):
-                ofensores.append(anterior_aberto)
-            continue
+            continue  # deleção: tratada por _gates_deletados_indevidamente
 
         todas_aguardando = all(e.get("status") == "aguardando-po" for e in entradas)
         if todas_aguardando:
@@ -636,9 +690,25 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
 def guard_gate_clear(tool, tool_input, cwd):
     """Impede o Claude de se auto-liberar escrevendo no gate.json.
 
-    PAREDE (mecânica): nenhum gate é marcado como decidido sem existir
-    turno REAL do PO com seq posterior ao opened_at_seq DAQUELE gate. O
-    Claude não fabrica um UserPromptSubmit, então isto é inviolável.
+    MODELO UNIFICADO: um gate aberto com `opened_at_seq = S` só sai de
+    'aguardando-po' MUDANDO para um status decidido, MANTENDO
+    `opened_at_seq = S`, e apenas se houve turno humano com `seq > S`.
+    Nenhuma outra mutação de um gate aberto é permitida. E só ENTRA (abre
+    ou reabre) em 'aguardando-po' com `opened_at_seq >= seq_atual` — nunca
+    no passado. Isto se desdobra em quatro checagens, nesta ordem:
+
+    1. Conteúdo indisponível (Edit/Bash) com QUALQUER gate aberto: bloqueia
+       sempre — o fluxo legítimo usa Write com o JSON completo, e sem ver
+       o conteúdo não há como confirmar decisão vs. deleção disfarçada.
+    2. `_mutacao_invalida` (Aresta A): abertura/reabertura antedatada, e
+       decisão que altera o `opened_at_seq` do gate que estava aberto.
+    3. `_gates_deletados_indevidamente` (Aresta B): um gate aberto que
+       desaparece do conteúdo novo é auto-liberação por deleção — SEMPRE,
+       mesmo com turno humano. "Apagar não é decidir".
+    4. `_decided_without_turn`: decisão sem turno humano REAL posterior ao
+       `opened_at_seq` do gate (inclui chave fabricada do zero e chave
+       duplicada ambígua). PAREDE mecânica: o Claude não fabrica um
+       UserPromptSubmit, então isto é inviolável.
 
     LIMITE CONHECIDO: se a fala do PO SUSTENTA a decisão daquele gate
     específico, o hook não tem como saber — isso é semântica, e hook não lê
@@ -651,47 +721,94 @@ def guard_gate_clear(tool, tool_input, cwd):
         return
     abertos = _open_gates_seguro(cwd)
     novos = _gates_from_content(tool, tool_input)
+
     if novos is None:
-        # Conteúdo indisponível (Edit/Bash): conservador. Só há o que
-        # proteger se havia gate aberto — sem conteúdo E sem gate aberto,
-        # não há decisão possível para examinar.
+        # Conteúdo indisponível (Edit, ou Bash como `rm gate.json`,
+        # `> gate.json`, `truncate`, `sed -i`...): o fluxo legítimo SEMPRE
+        # usa Write com o JSON completo, então não há como confirmar que a
+        # escrita resultante é uma decisão (mudança de status) e não uma
+        # deleção/truncamento. Bloqueia sempre que existir QUALQUER gate
+        # aberto — mesmo com turno humano presente, porque turno não prova
+        # nada sobre o CONTEÚDO que este comando produz. Sem gate aberto,
+        # não há nada aqui para proteger.
         if not abertos:
             return
-        ofensores = [
-            g for g in abertos
-            if not _has_human_turn_seguro(cwd, g.get("opened_at_seq", 0))
-        ]
-    else:
-        # NUNCA usar só `abertos` como gate de entrada aqui: uma chave
-        # fabricada do zero (nunca aberta) só é pega olhando também
-        # `anteriores` (estado completo em disco) dentro de
-        # `_decided_without_turn` — por isso sempre chamamos, mesmo com
-        # `abertos` vazio.
-        anteriores = _read_gates_seguro(cwd)
+        nomes = ", ".join(
+            f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
+            for g in abertos
+        )
+        block(
+            f"[spec-gate] ESCRITA NÃO VERIFICÁVEL NO GATE BLOQUEADA ({nomes}). "
+            "Este comando não expõe o conteúdo final de .specgate/gate.json "
+            "(Edit, ou Bash como rm/truncate/redirecionamento), e existe gate "
+            "aberto aguardando o PO. Sem ver o conteúdo resultante não há como "
+            "confirmar que isto é uma decisão (mudança de status preservando "
+            "opened_at_seq) e não uma deleção disfarçada. O fluxo legítimo usa "
+            "Write com o JSON completo. Apresente a decisão pendente ao PO e "
+            "aguarde a resposta real."
+        )
 
-        # Abertura antedatada: barra ANTES de examinar decisão. Um gate
-        # cujo opened_at_seq já nasce "no passado" forjaria a aprovação
-        # seguinte (ver _abertura_invalida), então isto é checado por si
-        # só, com mensagem própria — não é a mesma falha que
-        # _decided_without_turn cobre (decisão sem turno humano).
-        antedatados = _abertura_invalida(cwd, anteriores, novos)
-        if antedatados:
-            nomes = ", ".join(
-                f"{g.get('checkpoint', '?')}"
-                + (f"/{g['pbi']}" if g.get("pbi") else "")
-                for g in antedatados
-            )
-            block(
-                f"[spec-gate] ABERTURA DE GATE ANTEDATADA BLOQUEADA ({nomes}). "
-                "Um gate recém-aberto não pode declarar opened_at_seq menor que "
-                "o seq atual do projeto — isso tornaria a aprovação seguinte "
-                "forjável, porque o seq já teria 'ultrapassado' aquele valor por "
-                "turnos ANTERIORES à abertura, sem exigir nenhuma fala nova do "
-                "PO depois que o gate abriu. opened_at_seq de uma abertura nova "
-                "deve ser o seq atual (ou maior), nunca um valor do passado."
-            )
+    # NUNCA usar só `abertos` como gate de entrada nas checagens abaixo:
+    # uma chave fabricada do zero (nunca aberta) só é pega olhando também
+    # `anteriores` (estado completo em disco), então sempre computamos e
+    # chamamos, mesmo com `abertos` vazio.
+    anteriores = _read_gates_seguro(cwd)
 
-        ofensores = _decided_without_turn(cwd, abertos, anteriores, novos)
+    # Aresta A: abertura/reabertura antedatada, e decisão que altera o
+    # opened_at_seq do gate aberto. Barra ANTES de examinar deleção/turno —
+    # um opened_at_seq forjado (rebaixado, herdado de uma chave decidida,
+    # ou trocado ao decidir) forjaria a aprovação seguinte, então isto é
+    # checado por si só, com mensagens próprias.
+    ofensores_abertura, ofensores_decisao_seq = _mutacao_invalida(cwd, anteriores, novos)
+    if ofensores_abertura:
+        nomes = ", ".join(
+            f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
+            for g in ofensores_abertura
+        )
+        block(
+            f"[spec-gate] ABERTURA DE GATE ANTEDATADA BLOQUEADA ({nomes}). "
+            "Um gate recém-aberto ou reaberto não pode declarar opened_at_seq "
+            "menor que o seq atual do projeto — isso tornaria a aprovação "
+            "seguinte forjável, porque o seq já teria 'ultrapassado' aquele "
+            "valor por turnos ANTERIORES à abertura, sem exigir nenhuma fala "
+            "nova do PO depois que o gate (re)abriu. Isto vale tanto para uma "
+            "chave nova quanto para reabrir uma chave já DECIDIDA carimbada "
+            "com o valor histórico: opened_at_seq de uma abertura/reabertura "
+            "deve ser o seq atual (ou maior), nunca herdado do passado."
+        )
+
+    if ofensores_decisao_seq:
+        nomes = ", ".join(
+            f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
+            for g in ofensores_decisao_seq
+        )
+        block(
+            f"[spec-gate] DECISÃO ALTERA opened_at_seq BLOQUEADA ({nomes}). O "
+            "opened_at_seq de um gate aberto é imutável ao decidir: precisa "
+            "continuar exatamente igual ao valor registrado na abertura. "
+            "Mudá-lo (para baixo ou para cima) na MESMA escrita que decide "
+            "reescreveria o carimbo temporal que a checagem de turno humano "
+            "usa — rebaixar tornaria a aprovação forjável, e mesmo subir "
+            "corrompe o registro que uma auditoria posterior confiaria."
+        )
+
+    # Aresta B: gate aberto que desaparece do conteúdo novo é auto-liberação
+    # por deleção, sempre — "apagar não é decidir".
+    deletados = _gates_deletados_indevidamente(abertos, novos)
+    if deletados:
+        nomes = ", ".join(
+            f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
+            for g in deletados
+        )
+        block(
+            f"[spec-gate] GATE ABERTO DELETADO BLOQUEADO ({nomes}). Apagar ou "
+            "omitir do JSON um gate que aguarda o PO é auto-liberação por "
+            "deleção, mesmo com turno humano presente: a decisão legítima MUDA "
+            "o status do gate (aprovado/reprovado), preservando a entrada como "
+            "registro — nunca a apaga. 'Apagar não é decidir'."
+        )
+
+    ofensores = _decided_without_turn(cwd, abertos, anteriores, novos)
     if not ofensores:
         return
     nomes = ", ".join(

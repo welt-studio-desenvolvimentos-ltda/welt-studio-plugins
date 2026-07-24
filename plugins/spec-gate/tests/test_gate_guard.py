@@ -257,16 +257,91 @@ class GateClearTest(GuardBase):
         }, self.tmp)
 
     def test_sem_turno_humano_bloqueia_escrita_no_gate(self):
+        # MUDANÇA DE CONTRATO: sob a semântica antiga este teste usava
+        # esvaziar ([]) como veículo para testar "falta de turno". Sob a
+        # nova semântica, esvaziar um gate aberto é SEMPRE bloqueado (Aresta
+        # B, ver test_esvaziar_gate_aberto_com_turno_e_bloqueado acima),
+        # independente de turno — então não serve mais para exercitar
+        # especificamente a falta de turno. O veículo correto agora é uma
+        # DECISÃO (mudança de status preservando opened_at_seq) sem turno
+        # humano posterior.
         self._abre(opened_at_seq=10)
         self.state("seq", "10")
-        r = self._escreve_gate()
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "status": "aprovado", "opened_at_seq": 10},
+        ]))
         self.assertEqual(r.returncode, 2)
         self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", r.stderr)
 
-    def test_com_turno_humano_permite_escrita_no_gate(self):
+    def test_com_turno_humano_permite_decidir_gate_mantendo_opened_at_seq(self):
+        # MUDANÇA DE CONTRATO: sob a semântica antiga este teste liberava o
+        # gate ESVAZIANDO o gate.json ([]). Isso não é mais "decidir" — a
+        # liberação legítima muda o STATUS do gate para decidido preservando
+        # opened_at_seq, nunca apaga a entrada. Ver
+        # test_esvaziar_gate_aberto_com_turno_e_bloqueado logo abaixo para o
+        # contrato novo do caso "esvaziar".
         self._abre(opened_at_seq=10)
         self.state("seq", "11")
-        self.assertEqual(self._escreve_gate().returncode, 0)
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_esvaziar_gate_aberto_com_turno_e_bloqueado(self):
+        # Aresta B: a decisão legítima MUDA o status do gate (preservando a
+        # entrada como registro), nunca o apaga. Esvaziar o gate.json ([])
+        # com gate aberto é auto-liberação por deleção — "apagar não é
+        # decidir" — e precisa ser bloqueado MESMO com turno humano
+        # presente, ao contrário do contrato antigo que este teste
+        # substitui.
+        self._abre(opened_at_seq=10)
+        self.state("seq", "11")
+        r = self._escreve_gate("[]")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE ABERTO DELETADO BLOQUEADO", r.stderr)
+
+    def test_deletar_gate_ja_decidido_e_limpeza_legitima(self):
+        # Não-regressão: deletar/omitir uma chave que já estava DECIDIDA
+        # (não em `aguardando-po`) é limpeza legítima do gate.json, mesmo
+        # sem turno humano novo — não há gate aberto em jogo.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate("[]")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rm_gate_json_via_bash_com_gate_aberto_e_turno_e_bloqueado(self):
+        # Aresta B via Bash: `rm` não expõe o conteúdo final (Edit/Bash já
+        # caem na regra conservadora), e com gate aberto isso agora bloqueia
+        # SEMPRE, mesmo com turno humano — não há como confirmar que o
+        # resultado é uma decisão e não uma deleção.
+        self._abre(opened_at_seq=10)
+        self.state("seq", "11")
+        r = self.bash("rm .specgate/gate.json")
+        self.assertEqual(r.returncode, 2)
+
+    def test_truncar_gate_json_via_bash_com_gate_aberto_e_turno_e_bloqueado(self):
+        self._abre(opened_at_seq=10)
+        self.state("seq", "11")
+        r = self.bash("> .specgate/gate.json")
+        self.assertEqual(r.returncode, 2)
+
+    def test_decidir_gate_aberto_alterando_opened_at_seq_e_bloqueado(self):
+        # Aresta A: o opened_at_seq de um gate aberto é imutável ao decidir.
+        # Rebaixá-lo (ou alterá-lo de qualquer forma) na MESMA escrita que
+        # decide reescreveria o carimbo temporal que a checagem de turno
+        # usa — antes deste fix, `_decided_without_turn` validava contra o
+        # valor ANTERIOR em disco e ignorava por completo o valor
+        # fabricado aqui, então esta escrita passava (exit 0) mesmo
+        # forjando o campo.
+        self._abre(opened_at_seq=10)
+        self.state("seq", "11")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "status": "aprovado", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("DECISÃO ALTERA opened_at_seq BLOQUEADA", r.stderr)
 
     def test_bloqueia_tambem_via_bash(self):
         self._abre(opened_at_seq=10)
@@ -425,6 +500,48 @@ class AberturaAntedatadaTest(GuardBase):
             {"checkpoint": "novo", "status": "aguardando-po", "opened_at_seq": 7},
         ]))
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_reabrir_chave_decidida_com_opened_at_seq_historico_e_bloqueada(self):
+        # Ataque real (Aresta A, item 2): uma chave já DECIDIDA (aprovado,
+        # opened_at_seq=10) é reescrita de volta como aguardando-po com o
+        # MESMO opened_at_seq=10, herdado do valor histórico, quando o seq
+        # atual já passou de 10. Antes do fix isto "passava como
+        # preservação" — a checagem antiga só olhava se o VALOR batia com
+        # QUALQUER entrada anterior da chave, ignorando que aquela entrada
+        # estava DECIDIDA, não aberta — e reabria a janela: uma decisão
+        # seguinte validaria contra o opened_at_seq=10 já ultrapassado, sem
+        # exigir turno novo do PO. Reabertura de chave decidida precisa ser
+        # tratada como abertura nova (exige opened_at_seq >= seq_atual).
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aprovado", "opened_at_seq": 10},
+        ]))
+        self.state("seq", "50")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ABERTURA DE GATE ANTEDATADA BLOQUEADA", r.stderr)
+
+    def test_rewrite_com_opened_at_seq_rebaixado_em_gate_aberto_e_bloqueado(self):
+        # Aresta A, item 1 (robustez/não-regressão): mesmo mantendo o status
+        # aguardando-po, rebaixar o opened_at_seq de um gate já aberto não é
+        # preservação — é reabertura disfarçada, e cai na mesma exigência
+        # >= seq_atual. Como seq é monotônico e já alcançou o valor original
+        # na abertura (142), um valor rebaixado nunca consegue satisfazer
+        # >= seq_atual; isto já era bloqueado mesmo antes deste fix pela
+        # checagem de abertura antedatada — este teste documenta o
+        # invariante e prova que o fix (que agora exige explicitamente que
+        # a preservação real exija o anterior ter estado aguardando-po) não
+        # o regride.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "x", "status": "aguardando-po", "opened_at_seq": 142},
+        ]))
+        self.state("seq", "142")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "x", "status": "aguardando-po", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ABERTURA DE GATE ANTEDATADA BLOQUEADA", r.stderr)
 
     def test_furo_completo_abrir_antedatado_e_aprovar_na_mesma_sessao_e_barrado_na_abertura(self):
         # Reprodução do furo relatado: sem NENHUM UserPromptSubmit novo desde
