@@ -488,6 +488,82 @@ def _has_human_turn_seguro(cwd, opened_at_seq):
         return True
 
 
+def _seq_atual_seguro(cwd):
+    """Wrapper fail-open sobre specgate_state.read_seq.
+
+    Mesmo raciocínio dos demais `_seguro`: módulo ausente ou incompleto não
+    pode derrubar o guard. 0 é o lado permissivo aqui — exigir
+    `opened_at_seq >= 0` praticamente nunca bloqueia por erro interno, só
+    quando a abertura é antedatada de verdade.
+    """
+    if specgate_state is None:
+        return 0
+    try:
+        return specgate_state.read_seq(cwd)
+    except Exception:
+        return 0
+
+
+def _opened_at_seq_int(g):
+    """opened_at_seq como int, ou None se ausente/malformado (string, nulo,
+    etc.) — nunca levanta, para não gerar traceback num hook bloqueante."""
+    try:
+        return int(g.get("opened_at_seq", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _abertura_invalida(cwd, anteriores, novos):
+    """Gates 'aguardando-po' no conteúdo novo cuja abertura é antedatada.
+
+    Fecha o furo: abrir um gate com `opened_at_seq` no passado (menor que o
+    `seq` atual) tornaria a aprovação seguinte forjável, porque o `seq`
+    "já passou" daquele valor por turnos ANTERIORES à abertura — nenhum
+    turno novo do PO seria necessário para liberar. `opened_at_seq` de um
+    gate recém-aberto não pode ser "carimbado no passado"; só pode ser o
+    `seq` atual (ou maior, se o comando preferir ser conservador).
+
+    Um gate 'aguardando-po' é RECÉM-ABERTO quando sua chave (checkpoint,
+    pbi), comparada contra o estado ANTERIOR completo em disco
+    (`read_gates`, não só os abertos):
+      (a) não existia antes, OU
+      (b) existia com um `opened_at_seq` DIFERENTE (reabertura/rebase do
+          valor).
+    Só para esses dois casos exigimos `opened_at_seq >= seq_atual`.
+
+    Uma entrada 'aguardando-po' cuja chave já existia antes com o MESMO
+    `opened_at_seq` está sendo apenas PRESERVADA num rewrite (ex.: a
+    escrita mexe em outro gate e mantém este idêntico) — não é abertura
+    nova, então não exigimos nada dela aqui, mesmo que `seq_atual` já
+    tenha avançado desde então (houve turno, mas ele não é sobre ESTE
+    gate; travar a preservação quebraria rewrites legítimos).
+    """
+    anteriores_por_chave = {}
+    for g in anteriores:
+        anteriores_por_chave.setdefault(_gate_key(g), []).append(g)
+
+    seq_atual = _seq_atual_seguro(cwd)
+    ofensores = []
+    for g in novos:
+        if g.get("status") != "aguardando-po":
+            continue
+        opened_at_seq = _opened_at_seq_int(g)
+        if opened_at_seq is None:
+            # Malformado (string/nulo/etc.): não dá para confiar no valor.
+            # Lado seguro é bloquear, nunca supor que está ok.
+            ofensores.append(g)
+            continue
+        anteriores_da_chave = anteriores_por_chave.get(_gate_key(g), [])
+        preservado = any(
+            _opened_at_seq_int(a) == opened_at_seq for a in anteriores_da_chave
+        )
+        if preservado:
+            continue
+        if opened_at_seq < seq_atual:
+            ofensores.append(g)
+    return ofensores
+
+
 def _decided_without_turn(cwd, abertos, anteriores, novos):
     """Gates que esta escrita libera efetivamente sem turno humano posterior.
 
@@ -592,6 +668,29 @@ def guard_gate_clear(tool, tool_input, cwd):
         # `_decided_without_turn` — por isso sempre chamamos, mesmo com
         # `abertos` vazio.
         anteriores = _read_gates_seguro(cwd)
+
+        # Abertura antedatada: barra ANTES de examinar decisão. Um gate
+        # cujo opened_at_seq já nasce "no passado" forjaria a aprovação
+        # seguinte (ver _abertura_invalida), então isto é checado por si
+        # só, com mensagem própria — não é a mesma falha que
+        # _decided_without_turn cobre (decisão sem turno humano).
+        antedatados = _abertura_invalida(cwd, anteriores, novos)
+        if antedatados:
+            nomes = ", ".join(
+                f"{g.get('checkpoint', '?')}"
+                + (f"/{g['pbi']}" if g.get("pbi") else "")
+                for g in antedatados
+            )
+            block(
+                f"[spec-gate] ABERTURA DE GATE ANTEDATADA BLOQUEADA ({nomes}). "
+                "Um gate recém-aberto não pode declarar opened_at_seq menor que "
+                "o seq atual do projeto — isso tornaria a aprovação seguinte "
+                "forjável, porque o seq já teria 'ultrapassado' aquele valor por "
+                "turnos ANTERIORES à abertura, sem exigir nenhuma fala nova do "
+                "PO depois que o gate abriu. opened_at_seq de uma abertura nova "
+                "deve ser o seq atual (ou maior), nunca um valor do passado."
+            )
+
         ofensores = _decided_without_turn(cwd, abertos, anteriores, novos)
     if not ofensores:
         return

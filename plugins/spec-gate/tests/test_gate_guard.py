@@ -371,5 +371,84 @@ class GateClearTest(GuardBase):
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
 
+class AberturaAntedatadaTest(GuardBase):
+    """Fecha o furo: opened_at_seq é escrito pelo próprio agente ao abrir um
+    gate, e nada validava esse valor. Abrir com opened_at_seq no passado
+    (menor que o seq atual) tornaria a aprovação seguinte forjável — o seq já
+    teria "ultrapassado" aquele valor por turnos ANTERIORES à abertura, sem
+    exigir nenhuma fala nova do PO depois que o gate abriu.
+    """
+
+    def _escreve_gate(self, content):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/gate.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_abrir_gate_novo_com_opened_at_seq_menor_que_seq_atual_e_bloqueado(self):
+        self.state("seq", "5")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "novo", "status": "aguardando-po", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ABERTURA DE GATE ANTEDATADA BLOQUEADA", r.stderr)
+
+    def test_abrir_gate_com_opened_at_seq_igual_ao_seq_atual_e_permitido(self):
+        self.state("seq", "5")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "novo", "status": "aguardando-po", "opened_at_seq": 5},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_abrir_gate_com_opened_at_seq_maior_que_seq_atual_e_permitido(self):
+        # Carimbar com um seq maior que o atual não é ataque — é conservador
+        # para cima. O comando pode preferir "reservar" um seq futuro.
+        self.state("seq", "5")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "novo", "status": "aguardando-po", "opened_at_seq": 6},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rewrite_que_preserva_gate_aberto_com_seq_atual_avancado_e_permitido(self):
+        # O gate abriu com opened_at_seq=5. Depois disso o usuário falou (seq
+        # sobe para 7). Um rewrite que apenas ACRESCENTA outro gate e mantém
+        # este idêntico (mesma chave, mesmo opened_at_seq) não é abertura
+        # nova — é preservação, e precisa continuar permitido mesmo com
+        # seq_atual > opened_at_seq daquele gate preservado.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "existente", "status": "aguardando-po", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "7")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "existente", "status": "aguardando-po", "opened_at_seq": 5},
+            {"checkpoint": "novo", "status": "aguardando-po", "opened_at_seq": 7},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_furo_completo_abrir_antedatado_e_aprovar_na_mesma_sessao_e_barrado_na_abertura(self):
+        # Reprodução do furo relatado: sem NENHUM UserPromptSubmit novo desde
+        # o início da sessão (seq já em 3 por turnos anteriores), o agente
+        # tenta abrir um gate com opened_at_seq=0 (antedatado) para, em
+        # seguida, aprová-lo sem turno. A barreira precisa agir já na
+        # ABERTURA, antes mesmo de chegar a segunda escrita (aprovação).
+        self.state("seq", "3")
+        abertura = self._escreve_gate(json.dumps([
+            {"checkpoint": "furo", "status": "aguardando-po", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(abertura.returncode, 2)
+        self.assertIn("ABERTURA DE GATE ANTEDATADA BLOQUEADA", abertura.stderr)
+
+        # Prova adicional: como a abertura nunca é persistida de verdade pelo
+        # Claude Code quando o hook bloqueia (exit 2 impede a escrita), uma
+        # tentativa de "aprovar" o gate antedatado não encontra o gate aberto
+        # em disco — cai na regra de chave nunca vista, também bloqueada.
+        aprovacao = self._escreve_gate(json.dumps([
+            {"checkpoint": "furo", "status": "aprovado", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(aprovacao.returncode, 2)
+        self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", aprovacao.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
