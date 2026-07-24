@@ -82,6 +82,57 @@ class LogEventTest(unittest.TestCase):
         self.assertNotIn("seq", entrada)
         self.assertEqual(entrada["event"], "UserPromptSubmit")
 
+    def test_sai_zero_com_specgate_state_com_erro_de_sintaxe(self):
+        """Instalação corrompida: specgate_state.py existe mas não compila.
+
+        Simula um deploy incompleto/arquivo truncado. O import levanta
+        SyntaxError, que não é subclasse de ImportError — precisa do
+        `except Exception` para não escapar e derrubar o hook.
+        """
+        isolado = tempfile.mkdtemp()
+        copia = os.path.join(isolado, "log_event.py")
+        shutil.copyfile(LOG_EVENT, copia)
+        with open(os.path.join(isolado, "specgate_state.py"), "w", encoding="utf-8") as fh:
+            fh.write("def bump_seq(cwd)\n    return 1\n")  # falta ':' -> SyntaxError
+
+        result = subprocess.run(
+            [sys.executable, copia],
+            input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "oi", "cwd": self.tmp}),
+            capture_output=True, text=True, cwd=self.tmp,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stderr: {result.stderr}")
+
+        # o resto do logging continua funcionando mesmo sem o campo seq
+        with open(os.path.join(self.tmp, ".specgate", "events.jsonl"), encoding="utf-8") as fh:
+            entrada = json.loads(fh.readline())
+        self.assertNotIn("seq", entrada)
+        self.assertEqual(entrada["event"], "UserPromptSubmit")
+
+    def test_sai_zero_com_specgate_state_sem_bump_seq(self):
+        """Instalação desatualizada: specgate_state.py importa, mas não tem
+        bump_seq/read_seq (versão parcial/antiga). A chamada levanta
+        AttributeError, que precisa estar protegida no ponto de uso, não só
+        no import.
+        """
+        isolado = tempfile.mkdtemp()
+        copia = os.path.join(isolado, "log_event.py")
+        shutil.copyfile(LOG_EVENT, copia)
+        with open(os.path.join(isolado, "specgate_state.py"), "w", encoding="utf-8") as fh:
+            fh.write("# versao parcial, sem bump_seq nem read_seq\n")
+
+        result = subprocess.run(
+            [sys.executable, copia],
+            input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "oi", "cwd": self.tmp}),
+            capture_output=True, text=True, cwd=self.tmp,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stderr: {result.stderr}")
+
+        # o resto do logging continua funcionando mesmo sem o campo seq
+        with open(os.path.join(self.tmp, ".specgate", "events.jsonl"), encoding="utf-8") as fh:
+            entrada = json.loads(fh.readline())
+        self.assertNotIn("seq", entrada)
+        self.assertEqual(entrada["event"], "UserPromptSubmit")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,8 +14,11 @@ try:
     # instalação corrompida ou checkout parcial não pode derrubar o hook em
     # QUALQUER evento, inclusive projetos que nem tem .specgate.json — por
     # isso o import é à prova de falha e o módulo vira None quando ausente.
+    # Captura qualquer Exception (não só ImportError): um specgate_state.py
+    # truncado/corrompido levanta SyntaxError na importação, que não é
+    # subclasse de ImportError e escaparia do except mais estrito.
     import specgate_state
-except ImportError:
+except Exception:
     specgate_state = None
 
 MAX_LINES = 400
@@ -40,10 +43,16 @@ def main():
     # Sem o módulo (import falhou), seguimos logando o resto sem o campo seq
     # em vez de explodir — fail-open também aqui.
     if specgate_state is not None:
-        if ev == "UserPromptSubmit":
-            entry["seq"] = specgate_state.bump_seq(cwd)
-        else:
-            entry["seq"] = specgate_state.read_seq(cwd)
+        try:
+            if ev == "UserPromptSubmit":
+                entry["seq"] = specgate_state.bump_seq(cwd)
+            else:
+                entry["seq"] = specgate_state.read_seq(cwd)
+        except Exception:
+            # Módulo presente mas desatualizado/parcial (ex.: sem
+            # bump_seq/read_seq) levanta AttributeError aqui. Mesmo
+            # fallback do módulo ausente: loga o resto sem o campo seq.
+            entry.pop("seq", None)
     tool = payload.get("tool_name")
     if tool:
         entry["tool"] = tool
