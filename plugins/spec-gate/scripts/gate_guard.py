@@ -271,14 +271,14 @@ def guard_regression(tool_input, cwd, cfg):
         return
     if "--dry-run" in cmd:
         return  # não altera o repo; não faz sentido rodar a suíte
+    test_command = cfg.get("test_command")
+    if not test_command:
+        return  # sem suíte configurada, nem vale a pena checar a branch (evita subprocess git à toa)
     # Commit WIP de PBI estacionado: a suíte está vermelha POR DEFINIÇÃO
     # (trabalho incompleto), e este commit existe justamente para preservar
     # esse trabalho. Seguro porque parked/* nunca é branch de entrega — o
     # merge de volta passa pelo gate normal na branch principal.
     if current_branch(cwd).startswith("parked/"):
-        return
-    test_command = cfg.get("test_command")
-    if not test_command:
         return
     timeout = int(cfg.get("test_timeout_seconds", 600))
     try:
