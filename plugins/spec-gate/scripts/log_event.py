@@ -55,7 +55,7 @@ def main():
         ev = payload.get("hook_event_name", "event")
         if not isinstance(ev, str) or not ev:
             ev = "event"
-        entry = {
+        entry: dict = {
             "ts": time.strftime("%H:%M:%S"),
             "event": ev,
         }
