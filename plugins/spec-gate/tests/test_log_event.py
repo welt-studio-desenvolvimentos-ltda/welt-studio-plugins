@@ -20,6 +20,13 @@ def run_hook(payload, cwd):
     )
 
 
+def run_hook_raw(raw_stdin, cwd):
+    return subprocess.run(
+        [sys.executable, LOG_EVENT], input=raw_stdin,
+        capture_output=True, text=True, cwd=cwd,
+    )
+
+
 class LogEventTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -107,6 +114,41 @@ class LogEventTest(unittest.TestCase):
             entrada = json.loads(fh.readline())
         self.assertNotIn("seq", entrada)
         self.assertEqual(entrada["event"], "UserPromptSubmit")
+
+    def test_payload_lista_sai_zero_sem_traceback(self):
+        """Brecha fail-open: `cwd = payload.get("cwd") or os.getcwd()` (e os
+        outros acessos a `.get`) rodavam ANTES de qualquer try/except. Um
+        stdin JSON válido mas não-objeto (lista/número/string/null) não tem
+        `.get(...)` — levantaria AttributeError e exit != 0, justamente no
+        hook que grava o seq (a prova de turno).
+        """
+        r = run_hook_raw("[1, 2, 3]", self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cwd_como_lista_sai_zero_sem_traceback(self):
+        """cwd de tipo inesperado (lista) dentro de um payload válido: o
+        `or` original não pega isso (lista não-vazia é truthy), então
+        `os.path.join(cwd, ...)` com `cwd` sendo uma lista levantava
+        TypeError não capturado.
+        """
+        r = run_hook({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "oi",
+            "cwd": [1, 2],
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_tool_input_nao_dict_sai_zero_sem_traceback(self):
+        r = run_hook({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": "nao é um objeto",
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_sai_zero_com_specgate_state_sem_bump_seq(self):
         """Instalação desatualizada: specgate_state.py importa, mas não tem
