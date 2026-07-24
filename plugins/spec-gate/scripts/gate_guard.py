@@ -56,7 +56,21 @@ BASH_WRITE_RES = [
     re.compile(r">{1,2}\s*\S"),
     re.compile(r"\b(mv|cp|rm)\b"),
     re.compile(r"\btruncate\b"),
+    re.compile(r"\bdd\b"),
+    re.compile(r"\binstall\b"),
 ]
+# LIMITE HONESTO, de propósito: esta lista NÃO é exaustiva e não pretende
+# ser. Ela cobre os desvios CASUAIS mais prováveis (redirecionamento, tee,
+# sed -i, mv/cp/rm, truncate, dd, install, interpretador inline/heredoc —
+# ver os comentários abaixo). Continuam passíveis de contornar por design,
+# porque isto é fricção e não um parser de shell de verdade: `eval "..."`,
+# `base64 -d ... | sh`, `awk 'BEGIN{print > "arquivo"}'` (o `>` fica dentro
+# de uma string entre aspas que o tokenizador trata como um único argumento
+# opaco do awk, não como redirecionamento do shell), indireção por variável
+# (`X=arquivo; echo oi > $X`) e substituição de comando no alvo
+# (`echo oi > "$(...)"`). Um modelo racionalizando um atalho casual não
+# chega nesses contornos; um adversário decidido sempre chega, e não é
+# esse o alvo aqui.
 # Invocação de interpretador com código inline: `python3 -c "..."`,
 # `sh -c "..."`, etc. escapam por completo dos regexes acima porque o
 # comando Bash em si não tem `>`, `tee`, `sed -i`... a escrita acontece
@@ -77,6 +91,10 @@ _INTERPRETER_INLINE_FLAGS = {
     "ksh": {"-c"},
 }
 _QUOTED_STRING_RE = re.compile(r"(['\"])(.*?)\1")
+# Heredoc de interpretador: `python3 <<EOF`, `python3 <<-'EOF'`, etc. O
+# grupo com aspas (se houver) precisa casar dos dois lados (`\1` no fim)
+# para o fim do match ficar depois da aspa de fechamento, não no meio dela.
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
 SEQ_REL = os.path.join(".specgate", "seq")
@@ -290,6 +308,27 @@ def _interpreter_inline_code(tokens):
     return None
 
 
+def _interpreter_heredoc_code(cmd, tokens):
+    """Se `tokens` é uma invocação de interpretador com heredoc
+    (`python3 <<EOF ... EOF`, `python3 <<'EOF' ... EOF`), devolve o corpo
+    do heredoc. Caso contrário, None.
+
+    Não reimplementamos o parser de heredoc do shell — não procuramos o
+    delimitador de FECHAMENTO (a linha `EOF` final), então o "corpo"
+    devolvido é tudo que vem depois do marcador de abertura, incluindo essa
+    linha final. Isso é inofensivo para `_inline_write_candidates`: ela só
+    extrai strings/tokens candidatos a caminho e ignora o resto do texto.
+    """
+    if not tokens:
+        return None
+    if _interpreter_name(tokens[0]) not in _INTERPRETER_INLINE_FLAGS:
+        return None
+    m = _HEREDOC_RE.search(cmd)
+    if not m:
+        return None
+    return cmd[m.end():]
+
+
 def _inline_write_candidates(code):
     """Candidatos a caminho dentro de um trecho de código-fonte arbitrário
     passado a um interpretador.
@@ -378,12 +417,23 @@ def write_targets(tool, tool_input):
         return []
 
     inline = _interpreter_inline_code(tokens)
+    if inline is None:
+        inline = _interpreter_heredoc_code(cmd, tokens)
     if inline is not None:
         return [c for c in _inline_write_candidates(inline) if c and not c.startswith("-")]
 
     if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
         return []
-    return [t for t in tokens[1:] if not t.startswith("-")]
+    targets = [t for t in tokens[1:] if not t.startswith("-")]
+    # `dd of=arquivo` (e `if=arquivo`) colam o caminho depois do `=` num
+    # único token — ele nunca aparece sozinho na lista acima. Oferecemos
+    # também o valor de qualquer token `chave=valor` como candidato extra,
+    # sem remover o token original (preferimos o falso positivo).
+    for t in list(targets):
+        _, eq, val = t.partition("=")
+        if eq and val:
+            targets.append(val)
+    return targets
 
 
 def _same_file(candidate, cwd, rel):

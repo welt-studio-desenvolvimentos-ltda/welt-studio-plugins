@@ -833,6 +833,42 @@ class SeqLockTest(GuardBase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
 
+    def test_dd_of_para_seq_via_bash_e_bloqueado(self):
+        r = self.bash("dd of=.specgate/seq if=/dev/null")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_install_para_seq_via_bash_e_bloqueado(self):
+        r = self.bash("install origem .specgate/seq")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_heredoc_python3_escrevendo_seq_e_bloqueado(self):
+        r = self.bash(
+            "python3 <<EOF\nopen('.specgate/seq','w').write('9999')\nEOF"
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_heredoc_python3_com_delimitador_entre_aspas_e_bloqueado(self):
+        r = self.bash(
+            "python3 <<'EOF'\nopen('.specgate/seq','w').write('9999')\nEOF"
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_awk_begin_print_redirect_nao_e_bloqueado_limite_conhecido(self):
+        # LIMITE CONHECIDO E ACEITO, não um bug: dentro de `awk 'BEGIN{...}'`
+        # o `>` fica DENTRO da string entre aspas simples que delimita o
+        # programa awk inteiro. O shlex (que não entende a semântica do
+        # awk) tokeniza o programa como um único argumento opaco, então o
+        # "alvo" nunca aparece como um caminho isolado para `write_targets`
+        # comparar — isto é fricção, não um parser de shell/awk de
+        # verdade, e este teste documenta honestamente o contorno, em vez
+        # de escondê-lo.
+        r = self.bash('awk \'BEGIN{print 9 > ".specgate/seq"}\'')
+        self.assertEqual(r.returncode, 0)
+
     def test_sem_specgate_json_escrita_em_seq_e_inerte(self):
         # Não-regressão: sem .specgate.json o guard inteiro é inerte,
         # inclusive este — o projeto simplesmente não usa spec-gate.
