@@ -236,5 +236,87 @@ class PoGateFailOpenTest(GuardBase):
         self.assertEqual(result.returncode, 0, msg=f"stderr: {result.stderr}")
 
 
+class GateClearTest(GuardBase):
+    def _abre(self, opened_at_seq=10, checkpoint="testes"):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": checkpoint, "status": "aguardando-po",
+             "opened_at_seq": opened_at_seq}
+        ]))
+
+    def _dois_gates(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aguardando-po", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aguardando-po", "opened_at_seq": 20},
+        ]))
+
+    def _escreve_gate(self, content="[]"):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/gate.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_sem_turno_humano_bloqueia_escrita_no_gate(self):
+        self._abre(opened_at_seq=10)
+        self.state("seq", "10")
+        r = self._escreve_gate()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", r.stderr)
+
+    def test_com_turno_humano_permite_escrita_no_gate(self):
+        self._abre(opened_at_seq=10)
+        self.state("seq", "11")
+        self.assertEqual(self._escreve_gate().returncode, 0)
+
+    def test_bloqueia_tambem_via_bash(self):
+        self._abre(opened_at_seq=10)
+        self.state("seq", "10")
+        r = self.bash("printf '[]' > .specgate/gate.json")
+        self.assertEqual(r.returncode, 2)
+
+    def test_sem_gate_aberto_escrita_livre(self):
+        self.assertEqual(self._escreve_gate().returncode, 0)
+
+    def test_decidir_gate_sem_turno_e_bloqueado_mesmo_com_outro_liberado(self):
+        # PBI-03 abriu em 10 (tem turno: seq=15). PBI-05 abriu em 20 (não tem).
+        # Marcar o 05 como aprovado é auto-liberação: PAREDE.
+        self._dois_gates()
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aguardando-po", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aprovado", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("05", r.stderr)
+
+    def test_decidir_so_o_gate_com_turno_e_permitido(self):
+        # O 03 tem turno posterior; decidir SÓ ele passa. O 05 fica aberto.
+        self._dois_gates()
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aprovado", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aguardando-po", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 0)
+
+    def test_ambos_com_turno_hook_permite_decidir_os_dois(self):
+        # LIMITE CONHECIDO: com turno posterior aos dois, o hook não distingue
+        # se a fala do PO cobre ambos. Isso é semântica, e hook não lê
+        # semântica — segurar o 05 aqui é instrução do comando, não parede.
+        self._dois_gates()
+        self.state("seq", "21")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aprovado", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aprovado", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 0)
+
+    def test_conteudo_indisponivel_cai_na_regra_conservadora(self):
+        # Bash não expõe o conteúdo pretendido: barra a escrita inteira.
+        self._dois_gates()
+        self.state("seq", "15")
+        self.assertEqual(self.bash("printf '[]' > .specgate/gate.json").returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

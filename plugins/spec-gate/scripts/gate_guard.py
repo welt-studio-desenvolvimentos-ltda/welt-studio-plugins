@@ -429,6 +429,110 @@ def guard_po_gate(tool, tool_input, cwd):
     )
 
 
+def _gate_key(g):
+    return (str(g.get("checkpoint", "")), str(g.get("pbi", "")))
+
+
+def _gates_from_content(tool, tool_input):
+    """Gates que a escrita pretende gravar; None se não der para saber.
+
+    Só o Write carrega o conteúdo pretendido. Edit e Bash não expõem o
+    resultado final, então caem na regra conservadora.
+    """
+    if tool != "Write":
+        return None
+    content = tool_input.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None
+    return [g for g in data if isinstance(g, dict)]
+
+
+def _has_human_turn_seguro(cwd, opened_at_seq):
+    """Wrapper fail-open sobre specgate_state.has_human_turn_since.
+
+    Mesmo raciocínio de `_open_gates_seguro`: módulo ausente ou presente mas
+    parcial/desatualizado (sem has_human_turn_since) não pode derrubar um
+    hook bloqueante. Assume-se "houve turno" — o guard não bloqueia por
+    causa de um erro interno seu, só por auto-liberação de verdade.
+    """
+    if specgate_state is None:
+        return True
+    try:
+        return specgate_state.has_human_turn_since(cwd, opened_at_seq)
+    except Exception:
+        return True
+
+
+def _decided_without_turn(cwd, abertos, novos):
+    """Gates abertos que esta escrita libera sem turno humano posterior.
+
+    Itera sobre os gates ANTIGOS (abertos), não os novos: apagar um gate do
+    arquivo também é liberá-lo, e essa forma não apareceria varrendo o
+    conteúdo novo.
+    """
+    por_chave = {_gate_key(g): g for g in novos}
+    ofensores = []
+    for anterior in abertos:
+        novo = por_chave.get(_gate_key(anterior))
+        if novo is not None and novo.get("status") == "aguardando-po":
+            continue  # segue aberto: nada foi liberado
+        # Ausente do conteúdo novo (apagado) ou com outro status (decidido).
+        if not _has_human_turn_seguro(cwd, anterior.get("opened_at_seq", 0)):
+            ofensores.append(anterior)
+    return ofensores
+
+
+def guard_gate_clear(tool, tool_input, cwd):
+    """Impede o Claude de se auto-liberar escrevendo no gate.json.
+
+    PAREDE (mecânica): nenhum gate é marcado como decidido sem existir
+    turno REAL do PO com seq posterior ao opened_at_seq DAQUELE gate. O
+    Claude não fabrica um UserPromptSubmit, então isto é inviolável.
+
+    LIMITE CONHECIDO: se a fala do PO SUSTENTA a decisão daquele gate
+    específico, o hook não tem como saber — isso é semântica, e hook não lê
+    semântica. Com dois gates abertos e um turno posterior a ambos, decidir
+    os dois passa no hook. Segurar o gate não-respondido é instrução do
+    comando /spec-gate mais honestidade do modelo, igual ao gatilho de
+    granularidade. Documentado assim de propósito, sem inflar.
+    """
+    if not any(_same_file(t, cwd, GATE_REL) for t in write_targets(tool, tool_input)):
+        return
+    abertos = _open_gates_seguro(cwd)
+    if not abertos:
+        return
+    novos = _gates_from_content(tool, tool_input)
+    if novos is None:
+        # Conteúdo indisponível: conservador, barra a escrita inteira.
+        ofensores = [
+            g for g in abertos
+            if not _has_human_turn_seguro(cwd, g.get("opened_at_seq", 0))
+        ]
+    else:
+        ofensores = _decided_without_turn(cwd, abertos, novos)
+    if not ofensores:
+        return
+    nomes = ", ".join(
+        f"{g.get('checkpoint', '?')}"
+        + (f"/{g['pbi']}" if g.get("pbi") else "")
+        for g in ofensores
+    )
+    block(
+        f"[spec-gate] AUTO-LIBERAÇÃO BLOQUEADA ({nomes}). Nenhuma mensagem do "
+        "PO chegou desde que este gate abriu, então a decisão dele não existe "
+        "e não pode ser registrada. Este bloqueio é o sistema funcionando: "
+        "apresente a decisão pendente ao PO e aguarde a resposta real."
+    )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -445,6 +549,7 @@ def main():
 
     try:
         guard_po_gate(tool, tool_input, cwd)
+        guard_gate_clear(tool, tool_input, cwd)
         phase = current_phase(cwd)
         if phase == "testing":
             guard_testing_phase(tool, tool_input, cwd, cfg)
