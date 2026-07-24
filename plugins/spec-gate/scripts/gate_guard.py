@@ -409,6 +409,23 @@ def _open_gates_seguro(cwd):
         return []
 
 
+def _read_gates_seguro(cwd):
+    """Wrapper fail-open sobre specgate_state.read_gates.
+
+    Mesmo raciocínio de `_open_gates_seguro`: usado para saber se uma chave
+    já existia no estado anterior COMPLETO (aberta ou já decidida), não só
+    nas abertas. Módulo ausente ou quebrado -> "nenhum gate anterior", que é
+    o lado permissivo (fail-open); a checagem de decisão sem turno humano
+    continua valendo pelos outros caminhos.
+    """
+    if specgate_state is None:
+        return []
+    try:
+        return specgate_state.read_gates(cwd)
+    except Exception:
+        return []
+
+
 def guard_po_gate(tool, tool_input, cwd):
     """Chokepoint: com gate de PO aberto, a transição de fase fica travada.
 
@@ -471,22 +488,72 @@ def _has_human_turn_seguro(cwd, opened_at_seq):
         return True
 
 
-def _decided_without_turn(cwd, abertos, novos):
-    """Gates abertos que esta escrita libera sem turno humano posterior.
+def _decided_without_turn(cwd, abertos, anteriores, novos):
+    """Gates que esta escrita libera efetivamente sem turno humano posterior.
 
-    Itera sobre os gates ANTIGOS (abertos), não os novos: apagar um gate do
-    arquivo também é liberá-lo, e essa forma não apareceria varrendo o
-    conteúdo novo.
+    Cobre três formas de liberação sem turno, todas sobre CHAVE
+    (checkpoint, pbi), nunca confiando em qual entrada "sobrevive" num dict
+    comum:
+
+    1. Gate aberto some do conteúdo novo (apagado) -> liberação.
+    2. Uma chave tem UMA SÓ entrada em `novos` e ela não é "aguardando-po"
+       -> decisão.
+    3. Uma chave tem MÚLTIPLAS entradas em `novos` (chave duplicada) e nem
+       todas são "aguardando-po" -> ambíguo, tratado como decisão. Isto
+       fecha o smuggling por chave duplicada: um dict comum
+       (`{chave: g}`) deixaria só a última entrada sobreviver e, se ela for
+       "aguardando-po", uma entrada "aprovado" fabricada passaria junto sem
+       jamais ser examinada.
+
+    Toda "decisão" (item 2 ou 3) só é aceita se a MESMA chave já existia no
+    estado anterior COMPLETO (`anteriores`, de read_gates — aberto ou já
+    decidido antes, não só as abertas). Uma decisão sobre uma chave que
+    nunca foi aberta é uma aprovação que o PO jamais pediu, e por isso é
+    bloqueada mesmo com `opened_at_seq` baixo auto-declarado e turno humano
+    de sobra: não existe gate anterior cujo `opened_at_seq` validar.
+
+    A validação de turno em si usa sempre o `opened_at_seq` do gate ANTERIOR
+    em disco (do `abertos`, ou de `anteriores` se a chave já existia mas não
+    estava aberta) — nunca o valor autodeclarado no conteúdo novo.
     """
-    por_chave = {_gate_key(g): g for g in novos}
+    abertos_por_chave = {_gate_key(g): g for g in abertos}
+    anteriores_por_chave = {_gate_key(g): g for g in anteriores}
+
+    novos_por_chave = {}
+    for g in novos:
+        novos_por_chave.setdefault(_gate_key(g), []).append(g)
+
     ofensores = []
-    for anterior in abertos:
-        novo = por_chave.get(_gate_key(anterior))
-        if novo is not None and novo.get("status") == "aguardando-po":
-            continue  # segue aberto: nada foi liberado
-        # Ausente do conteúdo novo (apagado) ou com outro status (decidido).
-        if not _has_human_turn_seguro(cwd, anterior.get("opened_at_seq", 0)):
-            ofensores.append(anterior)
+    for chave in set(abertos_por_chave) | set(novos_por_chave):
+        entradas = novos_por_chave.get(chave)
+        anterior_aberto = abertos_por_chave.get(chave)
+
+        if entradas is None:
+            # Sumiu do conteúdo novo: só é liberação se este gate estava
+            # aberto (apagar um já decidido antes não passa por aqui).
+            if anterior_aberto is not None and not _has_human_turn_seguro(
+                cwd, anterior_aberto.get("opened_at_seq", 0)
+            ):
+                ofensores.append(anterior_aberto)
+            continue
+
+        todas_aguardando = all(e.get("status") == "aguardando-po" for e in entradas)
+        if todas_aguardando:
+            continue  # segue aberto (ou é abertura nova): nada foi decidido
+
+        # É decisão: entrada única com status != aguardando-po, ou chave
+        # duplicada ambígua onde nem tudo é aguardando-po.
+        if chave not in anteriores_por_chave:
+            # Chave nunca existiu no estado anterior completo: aprovação
+            # fabricada do zero. Bloqueia sempre — não há gate anterior
+            # cujo turno humano possa validar isto.
+            ofensores.append(entradas[0])
+            continue
+
+        referencia = anterior_aberto if anterior_aberto is not None else anteriores_por_chave[chave]
+        if not _has_human_turn_seguro(cwd, referencia.get("opened_at_seq", 0)):
+            ofensores.append(referencia)
+
     return ofensores
 
 
@@ -507,17 +574,25 @@ def guard_gate_clear(tool, tool_input, cwd):
     if not any(_same_file(t, cwd, GATE_REL) for t in write_targets(tool, tool_input)):
         return
     abertos = _open_gates_seguro(cwd)
-    if not abertos:
-        return
     novos = _gates_from_content(tool, tool_input)
     if novos is None:
-        # Conteúdo indisponível: conservador, barra a escrita inteira.
+        # Conteúdo indisponível (Edit/Bash): conservador. Só há o que
+        # proteger se havia gate aberto — sem conteúdo E sem gate aberto,
+        # não há decisão possível para examinar.
+        if not abertos:
+            return
         ofensores = [
             g for g in abertos
             if not _has_human_turn_seguro(cwd, g.get("opened_at_seq", 0))
         ]
     else:
-        ofensores = _decided_without_turn(cwd, abertos, novos)
+        # NUNCA usar só `abertos` como gate de entrada aqui: uma chave
+        # fabricada do zero (nunca aberta) só é pega olhando também
+        # `anteriores` (estado completo em disco) dentro de
+        # `_decided_without_turn` — por isso sempre chamamos, mesmo com
+        # `abertos` vazio.
+        anteriores = _read_gates_seguro(cwd)
+        ofensores = _decided_without_turn(cwd, abertos, anteriores, novos)
     if not ofensores:
         return
     nomes = ", ".join(

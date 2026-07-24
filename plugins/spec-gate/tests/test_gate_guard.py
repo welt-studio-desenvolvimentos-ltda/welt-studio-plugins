@@ -317,6 +317,59 @@ class GateClearTest(GuardBase):
         self.state("seq", "15")
         self.assertEqual(self.bash("printf '[]' > .specgate/gate.json").returncode, 2)
 
+    def test_chave_duplicada_com_aprovado_e_aguardando_po_e_bloqueada(self):
+        # Critical 1: duas entradas com a MESMA chave em `novos`, uma
+        # "aprovado" e outra "aguardando-po". Um dict comum (`{chave: g}`)
+        # deixaria a última sobrevivver e, se ela for a "aguardando-po", a
+        # escrita passaria carregando junto a entrada "aprovado" fabricada.
+        self._abre(opened_at_seq=10, checkpoint="testes")
+        self.state("seq", "10")  # sem turno humano desde a abertura
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "status": "aprovado", "opened_at_seq": 10},
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", r.stderr)
+
+    def test_gate_novo_fabricado_aprovado_com_gate_real_aberto_ao_lado(self):
+        # Critical 2: chave NUNCA vista antes, escrita direto como "aprovado".
+        # `_decided_without_turn` só iterava sobre `open_gates`, então uma
+        # chave nova nunca era examinada. O gate real fica intocado ao lado
+        # (aguardando-po) para provar que o bloqueio é sobre a chave nova, não
+        # um efeito colateral de proteger o gate real.
+        self._abre(opened_at_seq=5, checkpoint="testes")
+        self.state("seq", "99")  # turno humano de sobra — não é isso que falta
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 5},
+            {"checkpoint": "checkpoint-fabricado", "status": "aprovado", "opened_at_seq": 1},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", r.stderr)
+        self.assertIn("checkpoint-fabricado", r.stderr)
+
+    def test_gate_novo_fabricado_aprovado_opened_at_seq_baixo_sem_outros_gates(self):
+        # Critical 2, forma mais nua: NENHUM gate aberto em disco (abertos
+        # vazio), então o `if not abertos: return` antigo nunca chegava a
+        # chamar `_decided_without_turn`. `opened_at_seq` baixo (0/1) é
+        # auto-declarado por quem escreve — mesmo turno humano de sobra não
+        # pode validar uma chave que nunca existiu no estado anterior.
+        self.state("seq", "5")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "checkpoint-fabricado", "status": "aprovado", "opened_at_seq": 0},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", r.stderr)
+
+    def test_abrir_gate_novo_aguardando_po_continua_permitido(self):
+        # Não-regressão: abrir gate novo (chave nunca vista, status
+        # aguardando-po) NÃO é decisão — precisa continuar liberado mesmo sem
+        # nenhum gate aberto em disco e sem turno humano.
+        self.state("seq", "0")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "feature-nova", "status": "aguardando-po", "opened_at_seq": 1},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()
