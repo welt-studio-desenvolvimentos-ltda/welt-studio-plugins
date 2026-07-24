@@ -141,7 +141,32 @@ Estado em `.specgate/gate.json`:
 ```
 
 **Chokepoint:** toda transição de fase já passa por escrita em `.specgate/phase`. Com gate
-aberto, o hook bloqueia essa escrita — o fluxo fica *fisicamente* impedido de avançar.
+aberto, o hook bloqueia essa escrita.
+
+### Duas camadas, garantias diferentes
+
+Confundir as duas seria prometer o que o código não faz.
+
+**Camada de fricção — a trava do arquivo de fase.** Baseada em parsing do comando Bash.
+Reconhece redirecionamento, `tee`, `sed -i`, `mv`/`cp`/`rm` e invocação de interpretador
+inline (`python -c`, `node -e`, `sh -c`, `bash -c` e afins). Isso **encarece o desvio
+acidental** — a ameaça real, um modelo sob pressão racionalizando um atalho — mas **não é
+sandbox e não pretende ser**: quem quiser burlar, burla. Mesmo limite que o gate black-box
+já assumia em 0.1.0.
+
+**Camada forte — a validação do `seq` na escrita do `gate.json`.** Não depende de parsing
+nenhum: depende de um turno real do usuário existir no log de eventos. **Nenhum interpretador
+contorna essa.** É aqui que mora a garantia dura do gate de PO.
+
+Por isso "fechar o barato" é o nível certo de investimento na camada de fricção — ela protege
+o que precisa proteger, e a parede de verdade está em outro lugar.
+
+**Caminho descartado, registrado para o futuro.** Validar a legitimidade da fase no ponto de
+consumo (em vez de proteger o arquivo) esbarra no modelo de estacionamento: com um gate aberto
+do PBI-03 estacionado, o fluxo precisa continuar livre para o PBI-04, então bloquear
+ferramentas de trabalho globalmente enquanto houver gate aberto quebraria a fila. A versão
+por-PBI disso exige rastrear qual arquivo pertence a qual PBI — o redesign caro. Se um dia
+essa parede for necessária, o caminho é o rastreamento, não mais parsing.
 
 **Duas camadas para liberar:**
 
