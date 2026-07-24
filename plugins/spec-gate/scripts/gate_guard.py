@@ -248,12 +248,35 @@ def guard_destructive(tool_input, cwd, cfg):
     )
 
 
+def current_branch(cwd):
+    """Branch atual, ou string vazia se não for repo git / git indisponível.
+
+    Fail-open deliberado NO SENTIDO CONTRÁRIO ao resto do módulo: aqui "" é
+    o lado que MANTÉM o gate de regressão rodando (não começa com
+    "parked/"), nunca o que libera. Detecção incerta não pode virar bypass.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "branch", "--show-current"], cwd=cwd,
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def guard_regression(tool_input, cwd, cfg):
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or not COMMIT_RE.search(cmd):
         return
     if "--dry-run" in cmd:
         return  # não altera o repo; não faz sentido rodar a suíte
+    # Commit WIP de PBI estacionado: a suíte está vermelha POR DEFINIÇÃO
+    # (trabalho incompleto), e este commit existe justamente para preservar
+    # esse trabalho. Seguro porque parked/* nunca é branch de entrega — o
+    # merge de volta passa pelo gate normal na branch principal.
+    if current_branch(cwd).startswith("parked/"):
+        return
     test_command = cfg.get("test_command")
     if not test_command:
         return

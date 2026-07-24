@@ -779,6 +779,59 @@ class MainFailOpenPayloadTest(GuardBase):
         self.assertNotIn("Traceback", r.stderr)
 
 
+class ParkedBranchTest(GuardBase):
+    """Branch `parked/*`: commit WIP que preserva um PBI estacionado não
+    pode ser barrado pelo gate de regressão, porque a suíte está vermelha
+    POR DEFINIÇÃO (trabalho incompleto). Seguro porque parked/* nunca é
+    branch de entrega — o merge de volta passa pelo gate normal.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.config({"test_command": "false"})  # suíte sempre vermelha
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, cwd=self.tmp, capture_output=True)
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init", "--no-verify"],
+                       cwd=self.tmp, capture_output=True)
+
+    def _branch(self, nome):
+        subprocess.run(["git", "checkout", "-q", "-b", nome], cwd=self.tmp, capture_output=True)
+
+    def test_branch_normal_com_suite_vermelha_bloqueia(self):
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+    def test_branch_parked_com_suite_vermelha_passa(self):
+        self._branch("parked/03-conversor")
+        self.assertEqual(self.bash("git commit -m wip").returncode, 0)
+
+    def test_branch_parecida_mas_nao_parked_bloqueia(self):
+        self._branch("parked-nao-e-prefixo")
+        self.assertEqual(self.bash("git commit -m wip").returncode, 2)
+
+
+class ParkedBranchDeteccaoFalhaTest(GuardBase):
+    """Falha na detecção de branch (ex.: cwd não é repo git, ou git
+    indisponível) NÃO pode virar bypass do gate de regressão. Na dúvida, o
+    gate de regressão deve RODAR — current_branch() volta "" e "" não
+    começa com "parked/", então o fluxo cai no comportamento normal
+    (executa a suíte e bloqueia se falhar).
+    """
+
+    def test_diretorio_sem_git_ainda_roda_gate_e_bloqueia(self):
+        # GuardBase.setUp NÃO inicializa um repositório git em self.tmp,
+        # então `git branch --show-current` falha (não é repo). Isto não
+        # pode ser lido como "está em parked/*" — o gate de regressão
+        # precisa continuar rodando normalmente.
+        self.config({"test_command": "false"})
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+
 class SeqLockTest(GuardBase):
     """Brecha 2: `.specgate/seq` é a prova inforjável de que o usuário
     falou (`has_human_turn_since` compara seq_atual > opened_at_seq), e
