@@ -98,6 +98,7 @@ _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
 SEQ_REL = os.path.join(".specgate", "seq")
+BATCH_REL = os.path.join(".specgate", "batch.json")
 
 
 def guard_spec_lock(tool, tool_input, cwd, cfg):
@@ -551,6 +552,71 @@ def guard_seq_lock(tool, tool_input, cwd):
         "escrevê-lo à mão forjaria a prova de que o usuário falou, da qual "
         "depende o gate de PO. NÃO tente contornar por outro caminho — se "
         "você precisa que o usuário fale, peça e aguarde a resposta real."
+    )
+
+
+def _batch_from_content(tool, tool_input):
+    """Conteúdo pretendido de .specgate/batch.json; None se não der para
+    saber.
+
+    Mesmo raciocínio de `_gates_from_content`: só o Write carrega o
+    conteúdo final. Edit e Bash (rm/truncate/redirecionamento/interpretador
+    inline etc.) não expõem o resultado, então caem na regra conservadora
+    de quem chama esta função.
+    """
+    if tool != "Write":
+        return None
+    content = tool_input.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def guard_batch_lock(tool, tool_input, cwd):
+    """Bloqueia, na medida da camada de fricção, a escrita que desliga o
+    congelamento da spec via .specgate/batch.json.
+
+    Diferente de `guard_seq_lock` (que bloqueia QUALQUER escrita reconhecida
+    em .specgate/seq), .specgate/batch.json PRECISA continuar escrevível
+    pelo fluxo normal do comando /spec-gate — ele guarda status de PBIs,
+    tentativas e commits do lote, não só o campo de aprovação. Um bloqueio
+    total quebraria esse fluxo. Por isso o bloqueio aqui é mais estreito:
+    só entra em jogo quando o disco JÁ tem `backlog_aprovado: true`
+    (congelamento ligado) e a escrita pretendida remove ou torna falsy esse
+    campo — exatamente o `echo '{}' > .specgate/batch.json` que desliga a
+    própria proteção que congela docs/backlog/ (ver `guard_spec_lock`).
+    Escritas que preservam `backlog_aprovado: true` (mudar status de item,
+    tentativas, commit) passam livres, mesmo alterando outros campos.
+
+    Conteúdo indisponível (Edit, ou Bash como rm/truncate/redirecionamento)
+    com o disco já aprovado é tratado do mesmo jeito conservador que
+    `guard_gate_clear` trata escrita não verificável no gate.json: sem ver
+    o resultado final não há como confirmar que backlog_aprovado continua
+    true, então bloqueia.
+    """
+    if not any(_same_file(t, cwd, BATCH_REL) for t in write_targets(tool, tool_input)):
+        return
+    if not _gate_po_1_passed_seguro(cwd):
+        return  # congelamento ainda não ligou: nada aqui para proteger
+    novo = _batch_from_content(tool, tool_input)
+    if isinstance(novo, dict) and novo.get("backlog_aprovado"):
+        return  # preserva a aprovação: passa, mesmo mudando outros campos
+    block(
+        "[spec-gate] DESLIGAMENTO DE backlog_aprovado BLOQUEADO. "
+        ".specgate/batch.json já registra o backlog aprovado, e esta "
+        "escrita remove ou torna falso esse campo (ou não expõe o "
+        "conteúdo final, como Edit ou Bash com rm/truncate/redirecionamento "
+        "— sem ver o resultado não há como confirmar que backlog_aprovado "
+        "continua true). Isso desligaria o congelamento de docs/backlog/ "
+        "sem decisão nenhuma do PO. Se você precisa atualizar status de "
+        "item, tentativas ou commit no lote, preserve o campo "
+        "backlog_aprovado: true na mesma escrita."
     )
 
 
@@ -1137,6 +1203,7 @@ def main():
             sys.exit(0)  # projeto não usa spec-gate; guard totalmente inerte
 
         guard_seq_lock(tool, tool_input, cwd)
+        guard_batch_lock(tool, tool_input, cwd)
         guard_po_gate(tool, tool_input, cwd)
         guard_gate_clear(tool, tool_input, cwd)
         phase = current_phase(cwd)

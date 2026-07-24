@@ -1041,6 +1041,101 @@ class SpecLockInterpreterEscapeTest(GuardBase):
         self.assertEqual(r.returncode, 0)
 
 
+class BatchLockTest(GuardBase):
+    """Pendência 5 (quinta instância do padrão de design): .specgate/batch.json
+    guarda o campo backlog_aprovado que liga o congelamento da spec
+    (guard_spec_lock), mas não tinha guard nenhum — `echo '{}' >
+    .specgate/batch.json` desligava a própria proteção. Diferente de
+    .specgate/seq (guard_seq_lock bloqueia QUALQUER escrita reconhecida),
+    batch.json PRECISA continuar escrevível pelo fluxo normal do /spec-gate
+    (status de PBI, tentativas, commits do lote), então o bloqueio aqui é
+    estreito: só a escrita que remove ou torna falsy backlog_aprovado
+    quando ele já era true no disco.
+    """
+
+    def _aprova_backlog(self, extra=None):
+        data = {"backlog_aprovado": True}
+        if extra:
+            data.update(extra)
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def _escreve_batch(self, content):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/batch.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_esvaziar_batch_json_com_backlog_aprovado_e_bloqueado(self):
+        self._aprova_backlog()
+        r = self._escreve_batch("{}")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("backlog_aprovado", r.stderr)
+
+    def test_desligar_backlog_aprovado_para_false_e_bloqueado(self):
+        self._aprova_backlog()
+        r = self._escreve_batch(json.dumps({"backlog_aprovado": False, "itens": {}}))
+        self.assertEqual(r.returncode, 2)
+
+    def test_rm_batch_json_via_bash_e_bloqueado(self):
+        self._aprova_backlog()
+        r = self.bash("rm .specgate/batch.json")
+        self.assertEqual(r.returncode, 2)
+
+    def test_truncar_batch_json_via_bash_e_bloqueado(self):
+        self._aprova_backlog()
+        r = self.bash("> .specgate/batch.json")
+        self.assertEqual(r.returncode, 2)
+
+    def test_edit_em_batch_json_com_backlog_aprovado_e_bloqueado(self):
+        # Edit não expõe o conteúdo final (mesma regra conservadora de
+        # _gates_from_content): sem ver o resultado não há como confirmar
+        # que backlog_aprovado continua true.
+        self._aprova_backlog()
+        r = run_guard({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": ".specgate/batch.json",
+                "old_string": "true",
+                "new_string": "false",
+            },
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+
+    def test_preservar_backlog_aprovado_mudando_outros_campos_e_permitido(self):
+        self._aprova_backlog({"itens": {"01": "pendente"}})
+        r = self._escreve_batch(json.dumps({
+            "backlog_aprovado": True,
+            "itens": {"01": "concluido"},
+            "tentativas": 2,
+        }))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_sem_backlog_aprovado_no_disco_arquivo_ausente_tudo_permitido(self):
+        # Antes do Gate PO 1 (batch.json ainda não existe): nada aqui para
+        # proteger.
+        r = self._escreve_batch("{}")
+        self.assertEqual(r.returncode, 0)
+
+    def test_backlog_aprovado_false_no_disco_tudo_permitido(self):
+        self._aprova_backlog({"backlog_aprovado": False})
+        r = self._escreve_batch("{}")
+        self.assertEqual(r.returncode, 0)
+
+    def test_batch_json_corrompido_no_disco_falha_aberto_permitido(self):
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            fh.write("{lixo")
+        r = self._escreve_batch("{}")
+        self.assertEqual(r.returncode, 0)
+
+    def test_escrita_em_outro_arquivo_nao_e_afetada(self):
+        self._aprova_backlog()
+        r = self.bash("echo oi > outro-arquivo.txt")
+        self.assertEqual(r.returncode, 0)
+
+
 class GatesLegadoTest(GuardBase):
     """Task 7: os 4 gates de 0.1.0 (guard_testing_phase, guard_destructive,
     guard_spec_lock, guard_regression) não tinham classe de teste dedicada —
