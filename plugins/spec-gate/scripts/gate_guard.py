@@ -106,8 +106,8 @@ def guard_spec_lock(tool, tool_input, cwd, cfg):
     if not spec_dirs:
         return
     reason = (
-        "[spec-gate] SPEC CONGELADA: o pipeline está em execução e a spec é o "
-        "contrato que julga o trabalho, então ela não pode ser alterada por quem "
+        "[spec-gate] SPEC CONGELADA: o Gate PO 1 já aprovou o backlog e a spec "
+        "é o contrato que julga o trabalho, então ela não pode ser alterada por quem "
         "está sendo julgado ({alvo}). Se você acredita que a spec está errada, "
         "PARE o pipeline e apresente o caso ao usuário: o que a spec diz, o que "
         "você encontrou, e qual mudança propõe. Só o usuário altera o contrato."
@@ -181,9 +181,9 @@ def guard_testing_phase(tool, tool_input, cwd, cfg):
 
     reason = (
         "[spec-gate] Fase de testes black-box ativa: leitura de código-fonte "
-        "bloqueada ({alvo}). Escreva os testes apenas a partir do SPEC.md. "
-        "Se a spec não bastar, registre a lacuna em 'Ambiguidades encontradas' "
-        "em vez de inspecionar a implementação."
+        "bloqueada ({alvo}). Escreva os testes apenas a partir da spec do PBI "
+        "em docs/backlog/. Se a spec não bastar, registre a lacuna em "
+        "'Ambiguidades encontradas' em vez de inspecionar a implementação."
     )
 
     if tool in READ_LIKE_TOOLS:
@@ -242,9 +242,10 @@ def guard_destructive(tool_input, cwd, cfg):
         "Explique ao usuário exatamente o que será perdido e peça confirmação "
         "explícita. Se o usuário confirmar, crie o arquivo .specgate/allow-destructive "
         "(vazio) e reexecute o comando UMA vez; a liberação é consumida na execução. "
-        "Exceção: no modo backlog, reverter APENAS os arquivos do item pulado é "
-        "permitido via checkout/restore de caminhos específicos, nunca do repositório "
-        "inteiro."
+        "Exceção: reverter APENAS os arquivos de um PBI estacionado é "
+        "permitido via checkout/restore de caminhos específicos, nunca do "
+        "repositório inteiro. Para limpar branch parked/* já mergeada use "
+        "'git branch -d' minúsculo, que não é bloqueado."
     )
 
 

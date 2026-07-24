@@ -997,5 +997,62 @@ class SpecFreezeTest(GuardBase):
         self.assertNotIn("Traceback", r.stderr)
 
 
+class GatesLegadoTest(GuardBase):
+    """Task 7: os 4 gates de 0.1.0 (guard_testing_phase, guard_destructive,
+    guard_spec_lock, guard_regression) não tinham classe de teste dedicada —
+    cobertura só indireta, espalhada por outras classes. Esta classe prova,
+    para cada um, que ele ainda bloqueia o que deve bloquear no fluxo novo, e
+    que as mensagens não citam mais conceitos extintos (SPEC.md, "modo
+    backlog", "o pipeline está em execução").
+    """
+
+    def test_blackbox_ainda_bloqueia_leitura_de_fonte(self):
+        self.state("phase", "testing")
+        os.makedirs(os.path.join(self.tmp, "src"), exist_ok=True)
+        r = run_guard({
+            "tool_name": "Read",
+            "tool_input": {"file_path": "src/app.py"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        # A mensagem não pode mais mandar ler SPEC.md: ele não existe mais.
+        self.assertNotIn("SPEC.md", r.stderr)
+
+    def test_destrutivo_ainda_bloqueia_rm_rf(self):
+        self.assertEqual(self.bash("rm -rf /tmp/x").returncode, 2)
+
+    def test_destrutivo_bloqueia_branch_D_maiusculo(self):
+        # -D numa parked/* não mergeada é o descarte que o gate existe
+        # para impedir. O bloqueio aqui está CORRETO.
+        r = self.bash("git branch -D parked/03-x")
+        self.assertEqual(r.returncode, 2)
+
+    def test_mensagem_destrutivo_nao_cita_modo_backlog(self):
+        r = self.bash("rm -rf /tmp/x")
+        self.assertNotIn("modo backlog", r.stderr)
+
+    def test_spec_lock_ainda_bloqueia_escrita_na_spec_congelada(self):
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "docs/backlog/01-x.md", "content": "# spec"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("o pipeline está em execução", r.stderr)
+
+    def test_regressao_ainda_bloqueia_commit_com_suite_vermelha(self):
+        self.config({"test_command": "false"})
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, cwd=self.tmp, capture_output=True)
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
