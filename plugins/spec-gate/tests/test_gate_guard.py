@@ -997,6 +997,50 @@ class SpecFreezeTest(GuardBase):
         self.assertNotIn("Traceback", r.stderr)
 
 
+class SpecLockInterpreterEscapeTest(GuardBase):
+    """guard_spec_lock fazia parsing próprio direto sobre BASH_WRITE_RES em
+    vez de usar `write_targets`, então não herdava o reconhecimento de
+    invocação de interpretador inline (`python3 -c`, `sh -c`, `bash -c`,
+    heredoc) nem os padrões `dd`/`install`. Consequência: a spec congelada
+    podia ser escrita por esses caminhos sem o guard perceber.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+
+    def test_python3_dash_c_escrevendo_spec_congelada_e_bloqueado(self):
+        r = self.bash(
+            "python3 -c \"open('docs/backlog/01-x.md','w').write('hackeado')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_sh_dash_c_escrevendo_spec_congelada_e_bloqueado(self):
+        r = self.bash('sh -c "echo hackeado > docs/backlog/01-x.md"')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_bash_dash_c_escrevendo_spec_congelada_e_bloqueado(self):
+        r = self.bash('bash -c "echo hackeado > docs/backlog/01-x.md"')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_escrita_legitima_fora_de_docs_backlog_continua_permitida(self):
+        r = self.bash("echo oi > outro-arquivo.txt")
+        self.assertEqual(r.returncode, 0)
+
+    def test_write_legitimo_fora_de_docs_backlog_continua_permitido(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/app.py", "content": "x"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0)
+
+
 class GatesLegadoTest(GuardBase):
     """Task 7: os 4 gates de 0.1.0 (guard_testing_phase, guard_destructive,
     guard_spec_lock, guard_regression) não tinham classe de teste dedicada —

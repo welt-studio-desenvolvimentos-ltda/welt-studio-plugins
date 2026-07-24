@@ -112,25 +112,17 @@ def guard_spec_lock(tool, tool_input, cwd, cfg):
         "PARE o pipeline e apresente o caso ao usuário: o que a spec diz, o que "
         "você encontrou, e qual mudança propõe. Só o usuário altera o contrato."
     )
-    if tool in ("Write", "Edit"):
-        candidate = tool_input.get("file_path") or tool_input.get("path")
-        if isinstance(candidate, str) and touches_source(candidate, cwd, spec_dirs):
-            block(reason.format(alvo=candidate))
-    elif tool == "Bash":
-        cmd = tool_input.get("command", "")
-        if not isinstance(cmd, str) or not cmd:
-            return
-        if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
-            return
-        try:
-            tokens = shlex.split(cmd, posix=True)
-        except ValueError:
-            tokens = cmd.split()
-        for t in tokens[1:]:
-            if t.startswith("-"):
-                continue
-            if touches_source(t, cwd, spec_dirs):
-                block(reason.format(alvo=t))
+    # Usa write_targets (a mesma extração de alvos dos outros guards) para
+    # herdar o reconhecimento de interpretador inline/heredoc e dd/install —
+    # antes deste fix, guard_spec_lock fazia seu próprio parsing direto sobre
+    # BASH_WRITE_RES e não reconhecia esses caminhos, deixando a spec
+    # congelada escrevível por eles. A comparação em si continua sendo
+    # touches_source (casa diretório, não só arquivo exato), diferente de
+    # _same_file usado pelos guards de arquivo único — spec_paths são
+    # diretórios, então qualquer arquivo dentro deles precisa ser pego.
+    for t in write_targets(tool, tool_input):
+        if touches_source(t, cwd, spec_dirs):
+            block(reason.format(alvo=t))
 
 
 def load_config(cwd):
