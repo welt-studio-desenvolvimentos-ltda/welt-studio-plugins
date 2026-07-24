@@ -540,6 +540,12 @@ class GateClearTest(GuardBase):
              "opened_at_seq": opened_at_seq}
         ]))
 
+    def _dois_gates(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aguardando-po", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aguardando-po", "opened_at_seq": 20},
+        ]))
+
     def _escreve_gate(self, content="[]"):
         return run_guard({
             "tool_name": "Write",
@@ -565,18 +571,48 @@ class GateClearTest(GuardBase):
         r = self.bash("printf '[]' > .specgate/gate.json")
         self.assertEqual(r.returncode, 2)
 
-    def test_resposta_parcial_um_gate_com_turno_outro_sem(self):
-        # PBI-03 abriu em 10 (tem turno: seq=15), PBI-05 abriu em 20 (não tem).
-        # Regra conservadora: existindo QUALQUER gate sem turno, a escrita para.
-        self.state("gate.json", json.dumps([
-            {"checkpoint": "aceite", "pbi": "03", "status": "aguardando-po", "opened_at_seq": 10},
-            {"checkpoint": "aceite", "pbi": "05", "status": "aguardando-po", "opened_at_seq": 20},
-        ]))
-        self.state("seq", "15")
-        self.assertEqual(self._escreve_gate().returncode, 2)
-
     def test_sem_gate_aberto_escrita_livre(self):
         self.assertEqual(self._escreve_gate().returncode, 0)
+
+    def test_decidir_gate_sem_turno_e_bloqueado_mesmo_com_outro_liberado(self):
+        # PBI-03 abriu em 10 (tem turno: seq=15). PBI-05 abriu em 20 (não tem).
+        # Marcar o 05 como aprovado é auto-liberação: PAREDE.
+        self._dois_gates()
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aguardando-po", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aprovado", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("05", r.stderr)
+
+    def test_decidir_so_o_gate_com_turno_e_permitido(self):
+        # O 03 tem turno posterior; decidir SÓ ele passa. O 05 fica aberto.
+        self._dois_gates()
+        self.state("seq", "15")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aprovado", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aguardando-po", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 0)
+
+    def test_ambos_com_turno_hook_permite_decidir_os_dois(self):
+        # LIMITE CONHECIDO: com turno posterior aos dois, o hook não distingue
+        # se a fala do PO cobre ambos. Isso é semântica, e hook não lê
+        # semântica — segurar o 05 aqui é instrução do comando, não parede.
+        self._dois_gates()
+        self.state("seq", "21")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "03", "status": "aprovado", "opened_at_seq": 10},
+            {"checkpoint": "aceite", "pbi": "05", "status": "aprovado", "opened_at_seq": 20},
+        ]))
+        self.assertEqual(r.returncode, 0)
+
+    def test_conteudo_indisponivel_cai_na_regra_conservadora(self):
+        # Bash não expõe o conteúdo pretendido: barra a escrita inteira.
+        self._dois_gates()
+        self.state("seq", "15")
+        self.assertEqual(self.bash("printf '[]' > .specgate/gate.json").returncode, 2)
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falha**
@@ -587,26 +623,85 @@ Expected: FAIL — os quatro primeiros esperam 2 e recebem 0
 - [ ] **Step 3: Implementar**
 
 ```python
+def _gate_key(g):
+    return (str(g.get("checkpoint", "")), str(g.get("pbi", "")))
+
+
+def _gates_from_content(tool, tool_input):
+    """Gates que a escrita pretende gravar; None se não der para saber.
+
+    Só o Write carrega o conteúdo pretendido. Edit e Bash não expõem o
+    resultado final, então caem na regra conservadora.
+    """
+    if tool != "Write":
+        return None
+    content = tool_input.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None
+    return [g for g in data if isinstance(g, dict)]
+
+
+def _decided_without_turn(cwd, novos):
+    """Gates abertos que esta escrita libera sem turno humano posterior.
+
+    Itera sobre os gates ANTIGOS, não os novos: apagar um gate do arquivo
+    também é liberá-lo, e essa forma não apareceria varrendo o conteúdo novo.
+    """
+    por_chave = {_gate_key(g): g for g in novos}
+    ofensores = []
+    for anterior in specgate_state.open_gates(cwd):
+        novo = por_chave.get(_gate_key(anterior))
+        if novo is not None and novo.get("status") == "aguardando-po":
+            continue  # segue aberto: nada foi liberado
+        # Ausente do conteúdo novo (apagado) ou com outro status (decidido).
+        if not specgate_state.has_human_turn_since(cwd, anterior.get("opened_at_seq", 0)):
+            ofensores.append(anterior)
+    return ofensores
+
+
 def guard_gate_clear(tool, tool_input, cwd):
     """Impede o Claude de se auto-liberar escrevendo no gate.json.
 
-    Camada 1 (inforjável): sem turno REAL do PO depois do gate abrir,
-    nenhuma decisão pode ser registrada. Conservador de propósito — basta
-    um gate aberto sem turno para travar a escrita, porque o hook não tem
-    como saber com segurança qual gate a escrita pretende alterar.
+    PAREDE (mecânica): nenhum gate é marcado como decidido sem existir
+    turno REAL do PO com seq posterior ao opened_at_seq DAQUELE gate. O
+    Claude não fabrica um UserPromptSubmit, então isto é inviolável.
 
-    Camada 2 (decisão por gate) é responsabilidade do comando /spec-gate,
-    que registra uma decisão individual por gate sustentada pela fala do PO.
+    LIMITE CONHECIDO: se a fala do PO SUSTENTA a decisão daquele gate
+    específico, o hook não tem como saber — isso é semântica, e hook não lê
+    semântica. Com dois gates abertos e um turno posterior a ambos, decidir
+    os dois passa no hook. Segurar o gate não-respondido é instrução do
+    comando /spec-gate mais honestidade do modelo, igual ao gatilho de
+    granularidade. Documentado assim de propósito, sem inflar.
     """
     if not any(_same_file(t, cwd, GATE_REL) for t in write_targets(tool, tool_input)):
         return
-    sem_turno = [
-        g for g in specgate_state.open_gates(cwd)
-        if not specgate_state.has_human_turn_since(cwd, g.get("opened_at_seq", 0))
-    ]
-    if not sem_turno:
+    abertos = specgate_state.open_gates(cwd)
+    if not abertos:
         return
-    nomes = ", ".join(str(g.get("checkpoint", "?")) for g in sem_turno)
+    novos = _gates_from_content(tool, tool_input)
+    if novos is None:
+        # Conteúdo indisponível: conservador, barra a escrita inteira.
+        ofensores = [
+            g for g in abertos
+            if not specgate_state.has_human_turn_since(cwd, g.get("opened_at_seq", 0))
+        ]
+    else:
+        ofensores = _decided_without_turn(cwd, novos)
+    if not ofensores:
+        return
+    nomes = ", ".join(
+        f"{g.get('checkpoint', '?')}"
+        + (f"/{g['pbi']}" if g.get("pbi") else "")
+        for g in ofensores
+    )
     block(
         f"[spec-gate] AUTO-LIBERAÇÃO BLOQUEADA ({nomes}). Nenhuma mensagem do "
         "PO chegou desde que este gate abriu, então a decisão dele não existe "
@@ -624,7 +719,7 @@ Ligar em `main()`, logo após `guard_po_gate`:
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `python3 -m unittest discover -s plugins/spec-gate/tests -t . -v`
-Expected: PASS, 25 testes
+Expected: PASS, 28 testes
 
 - [ ] **Step 5: Commit**
 
@@ -713,7 +808,7 @@ Inserir no início de `guard_regression`, logo após o early-return de `--dry-ru
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `python3 -m unittest discover -s plugins/spec-gate/tests -t . -v`
-Expected: PASS, 28 testes
+Expected: PASS, 31 testes
 
 - [ ] **Step 5: Commit**
 
@@ -806,7 +901,7 @@ por:
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `python3 -m unittest discover -s plugins/spec-gate/tests -t . -v`
-Expected: PASS, 31 testes
+Expected: PASS, 34 testes
 
 - [ ] **Step 5: Commit**
 
@@ -887,7 +982,7 @@ Em `guard_spec_lock`, trocar `o pipeline está em execução` por `o Gate PO 1 j
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `python3 -m unittest discover -s plugins/spec-gate/tests -t . -v`
-Expected: PASS, 35 testes
+Expected: PASS, 38 testes
 
 - [ ] **Step 5: Commit**
 
@@ -1041,7 +1136,7 @@ pj=json.load(open('plugins/spec-gate/.claude-plugin/plugin.json'))
 print('OK' if mk['spec-gate']==pj['version']=='0.2.0' else 'DRIFT')"
 grep -rn "SPEC\.md\|welt-plugins\|run-backlog" plugins/spec-gate/ --include=*.md || echo "(docs limpos)"
 ```
-Expected: 35 testes PASS · `OK` · `(docs limpos)`
+Expected: 38 testes PASS · `OK` · `(docs limpos)`
 
 - [ ] **Step 6: Commit**
 

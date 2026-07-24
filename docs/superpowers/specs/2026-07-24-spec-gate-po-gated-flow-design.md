@@ -151,19 +151,31 @@ aberto, o hook bloqueia essa escrita — o fluxo fica *fisicamente* impedido de 
 2. **Token.** O Claude registra a decisão no `gate.json`. Distingue "você falou" de "você
    aprovou".
 
-Escrita no próprio `gate.json` é interceptada e validada contra a camada 1 — senão o Claude se
-auto-liberaria.
+Escrita no próprio `gate.json` é interceptada e validada — senão o Claude se auto-liberaria.
 
-**Semântica com múltiplos gates abertos (crítico).** Com dois PBIs estacionados, uma única
-mensagem do PO tem `seq` maior que ambos os `opened_at_seq`. A resolução:
+### O que é parede e o que não é
 
-- **Camada 1 é global** — o turno humano libera a trava de *todos* os gates abertos. Isso é
-  desejável: é o que permite responder tudo numa sentada (o espírito do Gate PO 1).
-- **Camada 2 é por gate** — o Claude registra decisão **individual** em cada `gate.json`, e
-  cada registro precisa ser sustentado pelo conteúdo da mensagem do PO.
+A validação da escrita no `gate.json` divide-se em duas metades com garantias **diferentes**,
+e confundi-las seria prometer o que o código não faz.
 
-Sem essa separação, "respondi só o PBI 3" destravaria o PBI 5 por tabela. Gate sem decisão
-explícita permanece aberto mesmo com turno humano posterior.
+🔒 **Parede (mecânica).** Ao interceptar a escrita, o hook lê o conteúdo pretendido e valida
+gate a gate: **nenhum gate pode ser marcado como decidido sem existir turno humano com `seq`
+posterior ao `opened_at_seq` daquele gate**. Isso fecha o buraco da auto-liberação por
+completo — o Claude fica fisicamente impedido de aprovar qualquer gate sem o PO ter falado
+depois de ele abrir. Quando o conteúdo não está disponível (Edit, Bash), a validação cai numa
+regra conservadora que barra a escrita inteira.
+
+⛔ **Semi-mecânica (instrução).** Se o conteúdo da mensagem do PO **sustenta** a decisão
+daquele gate específico, o hook não tem como saber. Com dois PBIs estacionados, uma resposta
+que trata só do PBI-03 tem `seq` posterior ao `opened_at_seq` do PBI-05 também — então se o
+Claude registrar decisão no 05 por conta própria, o hook vê turno válido e deixa passar.
+Distinguir "esta mensagem fala do 03 e não do 05" é **semântica, e hook não lê semântica**.
+
+Essa metade depende de instrução mais honestidade do modelo, exatamente como o gatilho de
+granularidade. Documentar assim, sem inflar.
+
+**Consequência para a verificação:** o cenário de resposta parcial (07) é **teste de
+comportamento do modelo**, não de parede. A parede é testada pelo cenário 02.
 
 ## Mudanças
 
@@ -218,8 +230,9 @@ implementação, não vigilância difusa.
 
 1. **Gate trava sem turno humano** — abrir gate, tentar `printf 'x' > .specgate/phase` na mesma
    volta; deve bloquear com exit 2. Depois de uma mensagem real do PO, deve liberar.
-2. **Auto-liberação impedida** — com gate aberto e sem turno do PO, tentar escrever
-   `status: aprovado` no `gate.json` deve ser bloqueado.
+2. **Auto-liberação impedida (parede)** — com gate aberto e sem turno do PO posterior ao
+   `opened_at_seq` dele, tentar marcá-lo como decidido no `gate.json` deve ser bloqueado.
+   Este é o teste da garantia mecânica.
 3. **Fail-open preservado** — corromper o `gate.json` e confirmar que o hook sai 0.
 4. **Gates mecânicos intactos** — reexecutar os cenários do 0.1.0: leitura de `source_paths` na
    fase de testes, `git commit` com suíte vermelha, `rm -rf`, edição de spec durante o pipeline.
@@ -229,9 +242,11 @@ implementação, não vigilância difusa.
    a suíte vermelha), que a working tree volta limpa, que o PBI seguinte roda sem contaminação,
    e que **retomar o estacionado devolve o trabalho inteiro**.
 6. **Inércia** — sem `.specgate.json`, nenhum gate dispara.
-7. **Resposta parcial com dois gates abertos** — estacionar PBI-03 e PBI-05, e responder apenas
-   o PBI-03. O 03 destrava; **o 05 continua travado**. Fixa a semântica de camada 1 global /
-   camada 2 por gate.
+7. **Resposta parcial com dois gates abertos (comportamento do modelo, não parede)** —
+   estacionar PBI-03 e PBI-05, e responder apenas o PBI-03. O esperado é que só o 03 destrave.
+   Ambos têm turno humano posterior, então o hook **permitiria** decidir os dois: o que segura
+   o 05 aqui é instrução, não mecânica. Este cenário verifica a honestidade do modelo, e uma
+   falha nele é defeito de prompt do comando `/spec-gate`, não de hook.
 8. **`seq` no painel do VS Code** — provar que `UserPromptSubmit` dispara igual pela UI gráfica,
    não só pelo terminal. É o mesmo engine, mas é onde o PO vai viver.
 

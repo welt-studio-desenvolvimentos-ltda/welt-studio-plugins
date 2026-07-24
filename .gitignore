@@ -8,3 +8,6 @@ __pycache__/
 # Artefatos da extensão VSCode
 node_modules/
 *.vsix
+
+# Scratch do subagent-driven-development (ledger de progresso)
+.superpowers/
