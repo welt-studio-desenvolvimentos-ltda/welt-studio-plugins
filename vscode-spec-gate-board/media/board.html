@@ -87,6 +87,9 @@ function rodadaNum(g){
 // Gate VIGENTE de cada (checkpoint, pbi): o de maior rodada. Rodadas
 // anteriores, já decididas, nunca contam como pendentes.
 function gatesAbertos(gates){
+  // Tolera o formato de gate único (um objeto em vez de array), igual a
+  // specgate_state.read_gates, board.sh e statusline.sh.
+  if(gates && typeof gates === "object" && !Array.isArray(gates)) gates = [gates];
   if(!Array.isArray(gates)) return [];
   const melhor = new Map();
   for(const g of gates){

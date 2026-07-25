@@ -40,6 +40,7 @@ BASH_READ_CMDS = {
     "awk", "cut", "strings", "xxd", "hexdump", "nl", "od", "bat",
 }
 COMMIT_RE = re.compile(r"\bgit\b.*\b(commit|merge)\b")
+MERGE_RE = re.compile(r"\bgit\b.*\bmerge\b")
 DESTRUCTIVE_RES = [
     (re.compile(r"\bgit\b.*\breset\b.*--hard"), "git reset --hard"),
     (re.compile(r"\bgit\b.*\bclean\b.*-[a-zA-Z]*f"), "git clean -f"),
@@ -286,7 +287,14 @@ def guard_regression(tool_input, cwd, cfg):
     # (trabalho incompleto), e este commit existe justamente para preservar
     # esse trabalho. Seguro porque parked/* nunca é branch de entrega — o
     # merge de volta passa pelo gate normal na branch principal.
-    if current_branch(cwd).startswith("parked/"):
+    #
+    # A isenção vale só para COMMIT: `git merge` nunca entra nela. A branch
+    # lida aqui é a do momento do hook (PreToolUse roda ANTES do comando),
+    # então um comando encadeado partindo da parked — `git checkout <main>
+    # && git merge parked/NN` — seria lido como "estou em parked/*" e
+    # puliria justamente o gate que deve validar a entrega na branch
+    # principal.
+    if not MERGE_RE.search(cmd) and current_branch(cwd).startswith("parked/"):
         return
     timeout = int(cfg.get("test_timeout_seconds", 600))
     try:
@@ -460,15 +468,27 @@ def write_targets(tool, tool_input):
     if not tokens:
         return []
 
+    targets = []
+
+    # Código inline de interpretador (`python3 -c "..."`, `sh -c "..."`,
+    # heredoc): o alvo da escrita está DENTRO do código passado, não nos
+    # tokens do shell. Isto SOMA aos candidatos, nunca substitui a varredura
+    # de tokens abaixo — `python3 -c "print('x')" > .specgate/phase` tem a
+    # escrita no REDIRECIONAMENTO do shell, fora do código inline; devolver
+    # só os candidatos inline deixaria esse alvo invisível para todos os
+    # guards (fase, seq, gate.json, batch.json e spec congelada).
     inline = _interpreter_inline_code(tokens)
     if inline is None:
         inline = _interpreter_heredoc_code(cmd, tokens)
     if inline is not None:
-        return [c for c in _inline_write_candidates(inline) if c and not c.startswith("-")]
+        targets.extend(
+            c for c in _inline_write_candidates(inline) if c and not c.startswith("-")
+        )
 
-    if not any(rx.search(cmd) for rx in BASH_WRITE_RES):
+    if any(rx.search(cmd) for rx in BASH_WRITE_RES):
+        targets.extend(t for t in tokens[1:] if not t.startswith("-"))
+    if not targets:
         return []
-    targets = [t for t in tokens[1:] if not t.startswith("-")]
     # `dd of=arquivo` (e `if=arquivo`) colam o caminho depois do `=` num
     # único token — ele nunca aparece sozinho na lista acima. Oferecemos
     # também o valor de qualquer token `chave=valor` como candidato extra,
@@ -1061,8 +1081,8 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
     de sobra: não existe gate anterior cujo `opened_at_seq` validar.
 
     A validação de turno em si usa sempre o `opened_at_seq` do gate ANTERIOR
-    em disco (do `abertos`, ou de `anteriores` se a chave já existia mas não
-    estava aberta) — nunca o valor autodeclarado no conteúdo novo (esse
+    em disco (o de `abertos`, único caso que chega até ela) — nunca o valor
+    autodeclarado no conteúdo novo (esse
     valor autodeclarado, quando a chave estava aberta, já foi validado à
     parte por `_mutacao_invalida`: se ele divergir do anterior, a escrita
     já terá sido bloqueada antes de chegar aqui).
@@ -1108,9 +1128,12 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
             ofensores.append(entradas[0])
             continue
 
-        referencia = anterior_aberto if anterior_aberto is not None else anteriores_por_chave[chave]
-        if not _has_human_turn_seguro(cwd, referencia.get("opened_at_seq", 0)):
-            ofensores.append(referencia)
+        # Aqui `anterior_aberto` é necessariamente não-None: a chave está em
+        # `anteriores` (senão teria caído no ramo acima) e o caso "em
+        # `anteriores` mas não aberta" já saiu por `continue` lá em cima
+        # (território exclusivo da categoria 2).
+        if not _has_human_turn_seguro(cwd, anterior_aberto.get("opened_at_seq", 0)):
+            ofensores.append(anterior_aberto)
 
     return ofensores
 

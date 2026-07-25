@@ -178,6 +178,22 @@ class InterpreterEscapeTest(GuardBase):
         r = self.bash('bash -c "echo implementing > .specgate/phase"')
         self.assertEqual(r.returncode, 0)
 
+    def test_redirecionamento_do_shell_fora_do_codigo_inline_e_bloqueado(self):
+        # O alvo está no REDIRECIONAMENTO do shell, não dentro do código
+        # passado ao interpretador. Devolver só os candidatos extraídos do
+        # código inline (e ignorar a varredura de tokens) deixaria este alvo
+        # invisível para todos os guards.
+        self._abre_gate()
+        r = self.bash("python3 -c \"print('implementing')\" > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_sh_dash_c_com_redirecionamento_do_shell_e_bloqueado(self):
+        self._abre_gate()
+        r = self.bash("sh -c 'printf implementing' > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
 
 class PoGateFailOpenTest(GuardBase):
     """Import à prova de falha: specgate_state corrompido/incompleto não pode
@@ -1123,6 +1139,16 @@ class ParkedBranchTest(GuardBase):
     def test_branch_parecida_mas_nao_parked_bloqueia(self):
         self._branch("parked-nao-e-prefixo")
         self.assertEqual(self.bash("git commit -m wip").returncode, 2)
+
+    def test_merge_partindo_da_parked_ainda_roda_o_gate(self):
+        # A branch lida aqui é a do MOMENTO DO HOOK (PreToolUse roda antes do
+        # comando), então um encadeado que sai da parked no próprio comando
+        # seria lido como "estou em parked/*". A isenção vale só para commit:
+        # o merge de volta é a entrega, e precisa passar pelo gate.
+        self._branch("parked/03-conversor")
+        r = self.bash("git checkout main && git merge parked/03-conversor")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
 
 
 class ParkedBranchDeteccaoFalhaTest(GuardBase):

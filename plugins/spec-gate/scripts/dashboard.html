@@ -84,6 +84,11 @@ function rodadaNum(g){
 // dashboard mostraria um gate reprovado antigo como se ainda esperasse o
 // PO, mesmo depois de uma rodada nova já ter sido aberta.
 function gatesAbertos(gates){
+  // Tolera o formato de gate único (um objeto em vez de array), igual a
+  // specgate_state.read_gates, board.sh, statusline.sh e a extensão do VS
+  // Code — sem isto um gate.json com `{...}` aparece como "nenhum" aqui
+  // enquanto o terminal mostra o gate aberto.
+  if(gates && typeof gates === "object" && !Array.isArray(gates)) gates = [gates];
   if(!Array.isArray(gates)) return [];
   const melhor = new Map();
   for(const g of gates){
