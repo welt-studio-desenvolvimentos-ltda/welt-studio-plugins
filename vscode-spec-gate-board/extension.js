@@ -11,9 +11,14 @@ function root() {
 }
 
 function readState(dir) {
-  const out = { config: null, batch: null, events: [] };
+  const out = { config: null, batch: null, gates: [], events: [] };
   try { out.config = JSON.parse(fs.readFileSync(path.join(dir, ".specgate.json"), "utf8")); } catch (e) {}
   try { out.batch = JSON.parse(fs.readFileSync(path.join(dir, ".specgate", "batch.json"), "utf8")); } catch (e) {}
+  try {
+    const raw = fs.readFileSync(path.join(dir, ".specgate", "gate.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    out.gates = Array.isArray(parsed) ? parsed : [parsed];
+  } catch (e) {}
   try {
     const raw = fs.readFileSync(path.join(dir, ".specgate", "events.jsonl"), "utf8");
     out.events = raw.trim().split("\n").slice(-80).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean).reverse();

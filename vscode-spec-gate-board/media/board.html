@@ -28,6 +28,8 @@
   .skipped{background:rgba(251,188,4,.15);color:var(--yellow)}
   .failed{background:rgba(234,67,53,.15);color:var(--red)}
   .q{background:#2c2417;border-left:3px solid var(--yellow);border-radius:6px;padding:8px 12px;margin-top:8px;font-size:13px}
+  .gate{background:#2c2417;border-left:3px solid var(--yellow);border-radius:6px;padding:8px 12px;margin-top:8px;font-size:13px}
+  .gate .rodada{color:var(--yellow);font-family:monospace}
   .empty{color:var(--dim);font-style:italic}
   a{color:var(--blue)}
 </style>
@@ -54,6 +56,11 @@
 </div>
 
 <div class="card">
+  <h2>Gates aguardando o PO</h2>
+  <div id="gates" class="empty">nenhum</div>
+</div>
+
+<div class="card">
   <h2>Work Log</h2>
   <div id="worklog" class="empty">sem eventos ainda</div>
 </div>
@@ -67,11 +74,49 @@ function pill(st){
 function baseName(p){ return (p||"").split("/").pop(); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+// Rodada de um gate (Task 9): ausente ou malformada vira 1, o mesmo
+// default de compatibilidade usado por specgate_state.py/_rodada — nunca
+// lança, para o board nunca travar num JSON com campo estranho.
+function rodadaNum(g){
+  const v = g && g.rodada;
+  if(v === undefined || v === null) return 1;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
+// Gate VIGENTE de cada (checkpoint, pbi): o de maior rodada. Rodadas
+// anteriores, já decididas, nunca contam como pendentes.
+function gatesAbertos(gates){
+  if(!Array.isArray(gates)) return [];
+  const melhor = new Map();
+  for(const g of gates){
+    if(!g || typeof g !== "object") continue;
+    const chave = (g.checkpoint||"") + " " + (g.pbi||"");
+    const atual = melhor.get(chave);
+    if(!atual || rodadaNum(g) > rodadaNum(atual)) melhor.set(chave, g);
+  }
+  return Array.from(melhor.values()).filter(g => (g.status||"") === "aguardando-po");
+}
+
 function render(state){
   const stamp = document.getElementById("stamp");
   const cfg = state.config || {};
   document.getElementById("proj").textContent =
     cfg.project_name || "(sem nome, defina project_name no .specgate.json)";
+
+  const gatesEl = document.getElementById("gates");
+  const abertos = gatesAbertos(state.gates || []);
+  if(abertos.length){
+    gatesEl.className = "";
+    gatesEl.innerHTML = abertos.map(g => `
+      <div class="gate">
+        <span class="id">${esc(g.checkpoint)}${g.pbi ? "/" + esc(g.pbi) : ""}</span>
+        <span class="rodada">rodada ${esc(rodadaNum(g))}</span>
+        ${(g.questions||[]).map(q => `<div>${esc(q)}</div>`).join("")}
+      </div>`).join("");
+  }else{
+    gatesEl.className = "empty"; gatesEl.textContent = "nenhum";
+  }
 
   const data = state.batch;
   const itemsEl = document.getElementById("items");

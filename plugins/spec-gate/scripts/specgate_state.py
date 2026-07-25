@@ -67,9 +67,49 @@ def read_gates(cwd):
     return [g for g in data if isinstance(g, dict)]
 
 
+def _rodada(g):
+    """Número da rodada de um gate, como int >= 1. Nunca levanta: valor
+    ausente ou malformado (string não numérica, float, negativo, tipos
+    mistos) vira 1 — o mesmo default de compatibilidade usado por
+    `gate_guard.py` para gates gravados antes da rodada existir. Esta
+    função é usada só para ESCOLHER o gate vigente (maior rodada) na
+    leitura; a validação de verdade de quem pode escrever cada rodada é
+    do guard, não daqui.
+    """
+    v = g.get("rodada", 1)
+    if isinstance(v, bool):
+        return 1
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return 1
+    return n if n >= 1 else 1
+
+
+def gates_vigentes(cwd):
+    """Um gate por (checkpoint, pbi): sempre o de MAIOR rodada.
+
+    Uma vez que a chave de um gate passou a incluir a rodada (Task 9),
+    gate.json acumula uma entrada por rodada de cada (checkpoint, pbi) —
+    o histórico de rework é o ponto (ver `.specgate/gate.json`: rodadas
+    anteriores, já decididas, continuam no array como registro). Nenhum
+    consumidor de "qual é o gate deste PBI agora" deve olhar uma rodada
+    antiga: ela já foi decidida e não representa mais nada pendente.
+    """
+    melhor = {}
+    for g in read_gates(cwd):
+        chave = (g.get("checkpoint"), g.get("pbi"))
+        if chave not in melhor or _rodada(g) > _rodada(melhor[chave]):
+            melhor[chave] = g
+    return list(melhor.values())
+
+
 def open_gates(cwd):
-    """Gates aguardando decisão do PO."""
-    return [g for g in read_gates(cwd) if g.get("status") == "aguardando-po"]
+    """Gates aguardando decisão do PO — só o gate VIGENTE (maior rodada) de
+    cada (checkpoint, pbi). Uma rodada anterior já decidida nunca conta
+    como pendente, mesmo que apareça em disco com o status antigo.
+    """
+    return [g for g in gates_vigentes(cwd) if g.get("status") == "aguardando-po"]
 
 
 def has_human_turn_since(cwd, opened_at_seq):

@@ -80,7 +80,7 @@ Painel no navegador, estilo board de PBIs, lendo o estado do lote em tempo real:
 <plugin-dir>/scripts/dashboard.sh /caminho/do/projeto
 ```
 
-Sobe um servidor local (porta 8437 por padrão, só em 127.0.0.1), abre o navegador (em WSL2 abre no Windows via wslview/explorer.exe) e mostra: projeto (campo opcional `project_name` no `.specgate.json`), barra de progresso do lote, cada item com status colorido (pending, running, delivered, skipped, failed), tentativas e commit, e a seção "Perguntas aguardando o PO" com as ambiguidades acumuladas. Atualiza sozinho a cada 2 segundos lendo o `.specgate/batch.json` que o orquestrador mantém. Adicione `.specgate-dashboard.html` ao `.gitignore` junto com `.specgate/`.
+Sobe um servidor local (porta 8437 por padrão, só em 127.0.0.1), abre o navegador (em WSL2 abre no Windows via wslview/explorer.exe) e mostra: projeto (campo opcional `project_name` no `.specgate.json`), barra de progresso do lote, cada item com status colorido (pending, running, delivered, skipped, failed), tentativas e commit, a seção "Perguntas aguardando o PO" com as ambiguidades acumuladas e a seção "Gates aguardando o PO" lendo `.specgate/gate.json` — só o gate VIGENTE de cada checkpoint+PBI (o de maior rodada; uma rodada anterior já decidida nunca aparece como pendente). Atualiza sozinho a cada 2 segundos lendo `.specgate/batch.json` e `.specgate/gate.json` que o orquestrador mantém. Adicione `.specgate-dashboard.html` ao `.gitignore` junto com `.specgate/`.
 
 Para um resumo permanente dentro do próprio Claude Code, a statusline: no `.claude/settings.json` do projeto,
 
@@ -88,9 +88,9 @@ Para um resumo permanente dentro do próprio Claude Code, a statusline: no `.cla
 {"statusLine": {"type": "command", "command": "bash <plugin-dir>/scripts/statusline.sh"}}
 ```
 
-mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas` na barra da sessão, atualizando conforme o lote avança.
+mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas` na barra da sessão, e acrescenta `· 1 gate(s) aberto(s) (checkpoint/pbi rodada N)` quando há gate vigente aguardando o PO, atualizando conforme o lote avança.
 
-Dentro da própria conversa, três elementos visuais: a todo list nativa do Claude Code (o orquestrador mantém um todo por item, marcando conforme a fila avança, renderizada pela UI com riscado e tudo), o quadro ANSI que o orquestrador imprime após cada item (barra de progresso, itens coloridos por status, seção de perguntas do PO), e o comando `/spec-gate:board` para invocar o quadro a qualquer momento. O quadro é desenhado por `scripts/board.sh` lendo o `batch.json`, então funciona até fora do Claude Code, direto no seu terminal.
+Dentro da própria conversa, três elementos visuais: a todo list nativa do Claude Code (o orquestrador mantém um todo por item, marcando conforme a fila avança, renderizada pela UI com riscado e tudo), o quadro ANSI que o orquestrador imprime após cada item (barra de progresso, itens coloridos por status, seção de perguntas do PO, seção de gates do PO com a rodada corrente), e o comando `/spec-gate:board` para invocar o quadro a qualquer momento. O quadro é desenhado por `scripts/board.sh` lendo `batch.json` e `gate.json`, então funciona até fora do Claude Code, direto no seu terminal.
 
 ## Como o bloqueio black-box funciona
 

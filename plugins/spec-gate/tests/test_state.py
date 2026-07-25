@@ -66,6 +66,48 @@ class StateTest(unittest.TestCase):
         abertos = st.open_gates(self.tmp)
         self.assertEqual([g["checkpoint"] for g in abertos], ["testes"])
 
+    def test_open_gates_ignora_rodada_anterior_decidida_reprovado(self):
+        # Task 9: rodada 1 reprovada, rodada 2 aberta — o gate vigente é
+        # SÓ a rodada 2. A rodada 1 (registro histórico) não pode aparecer
+        # como pendente.
+        self._write("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1, "status": "reprovado"},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "aguardando-po"},
+        ]))
+        abertos = st.open_gates(self.tmp)
+        self.assertEqual(len(abertos), 1)
+        self.assertEqual(abertos[0]["rodada"], 2)
+
+    def test_open_gates_rodada_anterior_decidida_nao_conta_mesmo_com_status_stale(self):
+        # Robustez: mesmo que uma rodada ANTERIOR ainda traga
+        # "aguardando-po" em disco (não deveria acontecer sob o guard, mas
+        # a leitura não depende dessa garantia), só a rodada de MAIOR
+        # número decide se há algo pendente.
+        self._write("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1, "status": "aguardando-po"},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "aprovado"},
+        ]))
+        self.assertEqual(st.open_gates(self.tmp), [])
+
+    def test_gates_vigentes_seleciona_maior_rodada_por_serie(self):
+        self._write("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1, "status": "reprovado"},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "reprovado"},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 3, "status": "aguardando-po"},
+        ]))
+        vigentes = st.gates_vigentes(self.tmp)
+        self.assertEqual(len(vigentes), 1)
+        self.assertEqual(vigentes[0]["rodada"], 3)
+
+    def test_gates_vigentes_rodada_ausente_e_tratada_como_1(self):
+        # Compatibilidade: gate legado sem "rodada" (rodada implícita 1)
+        # não pode ser eclipsado por engano.
+        self._write("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "status": "aguardando-po"},
+        ]))
+        abertos = st.open_gates(self.tmp)
+        self.assertEqual(len(abertos), 1)
+
     def test_has_human_turn_since(self):
         self._write("seq", "15")
         self.assertTrue(st.has_human_turn_since(self.tmp, 10))

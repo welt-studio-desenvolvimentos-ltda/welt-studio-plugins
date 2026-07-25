@@ -1,8 +1,8 @@
 # spec-gate Board (extensão companheira do VS Code)
 
 Janela FIXA e dockável no VS Code mostrando o board do lote spec-gate ao vivo,
-sem servidor, sem polling: a extensão vigia `.specgate/batch.json` com fs.watch
-e empurra o estado pro webview a cada mudança.
+sem servidor, sem polling: a extensão vigia `.specgate/` (batch.json e
+gate.json) com fs.watch e empurra o estado pro webview a cada mudança.
 
 Isto é uma extensão VS Code comum, não um plugin de Claude Code: a API de
 plugins do Claude Code não tem superfície de UI, então janela fixa só por aqui.
@@ -29,5 +29,7 @@ code --install-extension spec-gate-board-0.1.0.vsix
 - Dockável em qualquer lugar do layout (arraste a aba), sobrevive a hide/show
   (`retainContextWhenHidden`)
 - Mesmo visual do dashboard de navegador: projeto, barra de progresso, itens
-  com status colorido, seção "Perguntas aguardando o PO"
+  com status colorido, seção "Perguntas aguardando o PO" e "Gates aguardando o
+  PO" (só o gate VIGENTE de cada checkpoint+PBI, ou seja, o de maior rodada —
+  uma rodada anterior já decidida nunca aparece como pendente)
 - Zero dependências de runtime, só a API do VS Code e Node builtin
