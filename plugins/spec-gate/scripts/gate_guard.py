@@ -14,6 +14,7 @@ Protocolo de hook do Claude Code: JSON no stdin; exit 0 permite,
 exit 2 bloqueia e envia o stderr de volta ao Claude como feedback.
 Qualquer erro interno do guard resulta em exit 0 (nunca quebrar a sessão).
 """
+import functools
 import json
 import os
 import re
@@ -325,6 +326,18 @@ def guard_testing_phase(tool, tool_input, cwd, cfg):
         cmd = tool_input.get("command", "")
         if not isinstance(cmd, str) or not cmd:
             return
+        # I5: este é um guard de LEITURA, e a escolha do lado seguro aqui é
+        # a OPOSTA à dos 4 guards de estado (ver BASH_CMD_TAMANHO_MAXIMO_
+        # VERIFICAVEL): um comando grande demais para valer a pena parsear
+        # é, de longe, mais provável de ser um heredoc legítimo (escrevendo
+        # um arquivo qualquer) do que uma tentativa de ler source_paths por
+        # esse caminho — quem quiser espiar o código não precisa de 64KB de
+        # comando para isso. Bloquear todo comando grande aqui seria
+        # fricção desproporcional ao risco, e reintroduziria a regressão de
+        # latência que este fix corrige (o parsing abaixo é o mesmo custo
+        # por token que os guards de estado tinham).
+        if len(cmd) > BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL:
+            return
         try:
             tokens = shlex.split(cmd, posix=True)
         except ValueError:
@@ -626,28 +639,22 @@ def _inline_write_candidates(code):
 # qual PBI, que é o redesign caro. Se um dia for necessário reduzir ainda
 # mais esta fricção (não uma parede impossível de furar — só mais cara de
 # contornar), o caminho é esse rastreamento — não mais parsing de comando.
-def write_targets(tool, tool_input):
-    """Caminhos que esta chamada pretende escrever.
-
-    Usado pelos guards que protegem arquivos de estado. Para Bash, devolve
-    todos os tokens não-flag quando o comando tem cara de escrita — é
-    grosseiro de propósito: preferimos um falso positivo (que o agente
-    contorna explicando ao PO) a um falso negativo que fura o gate.
+@functools.lru_cache(maxsize=16)
+def _write_targets_bash_cached(cmd):
+    """Núcleo cacheado de write_targets para Bash (I5, achado da revisão
+    final): dentro de UM processo do guard, até 6 guards diferentes (seq,
+    batch, phase, gate.json, spec lock, fase de testes) chamam
+    write_targets com o MESMO comando. Sem cache, shlex.split e a extração
+    de candidatos de código inline (que varrem o comando INTEIRO, heredoc
+    incluso) rodavam do zero a cada guard — um heredoc de milhares de
+    linhas virava milhares de tokens reprocessados 6 vezes.
     """
-    if tool in ("Write", "Edit"):
-        c = tool_input.get("file_path") or tool_input.get("path")
-        return [c] if isinstance(c, str) else []
-    if tool != "Bash":
-        return []
-    cmd = tool_input.get("command", "")
-    if not isinstance(cmd, str) or not cmd:
-        return []
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
         tokens = cmd.split()
     if not tokens:
-        return []
+        return ()
 
     targets = []
 
@@ -669,7 +676,7 @@ def write_targets(tool, tool_input):
     if any(rx.search(cmd) for rx in BASH_WRITE_RES):
         targets.extend(t for t in tokens[1:] if not t.startswith("-"))
     if not targets:
-        return []
+        return ()
     # `dd of=arquivo` (e `if=arquivo`) colam o caminho depois do `=` num
     # único token — ele nunca aparece sozinho na lista acima. Oferecemos
     # também o valor de qualquer token `chave=valor` como candidato extra,
@@ -678,7 +685,28 @@ def write_targets(tool, tool_input):
         _, eq, val = t.partition("=")
         if eq and val:
             targets.append(val)
-    return targets
+    return tuple(targets)
+
+
+def write_targets(tool, tool_input):
+    """Caminhos que esta chamada pretende escrever.
+
+    Usado pelos guards que protegem arquivos de estado. Para Bash, devolve
+    todos os tokens não-flag quando o comando tem cara de escrita — é
+    grosseiro de propósito: preferimos um falso positivo (que o agente
+    contorna explicando ao PO) a um falso negativo que fura o gate. O
+    parsing de verdade (`_write_targets_bash_cached`) é cacheado por
+    comando (I5) — ver docstring dele.
+    """
+    if tool in ("Write", "Edit"):
+        c = tool_input.get("file_path") or tool_input.get("path")
+        return [c] if isinstance(c, str) else []
+    if tool != "Bash":
+        return []
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not cmd:
+        return []
+    return list(_write_targets_bash_cached(cmd))
 
 
 def _same_file(candidate, cwd, rel):
@@ -686,6 +714,81 @@ def _same_file(candidate, cwd, rel):
         return False
     return os.path.realpath(os.path.join(cwd, os.path.expanduser(candidate))) == \
         os.path.realpath(os.path.join(cwd, rel))
+
+
+# I5 (achado da revisão final): acima deste tamanho, os 4 guards de estado
+# (seq/batch/phase/gate.json) não reparseiam o comando Bash por token — um
+# heredoc de dezenas de milhares de linhas (comando comum e legítimo, tipo
+# `cat > arquivo <<'EOF' ... EOF`) virava dezenas de milhares de candidatos,
+# cada um com até 2 os.path.realpath, MULTIPLICADO por guard (cada um dos 4
+# refazia esse trabalho para o MESMO comando). Acima do limite o comando é
+# tratado como NÃO VERIFICÁVEL — ver `_bloqueia_se_grande_demais` para o
+# lado seguro escolhido.
+BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL = 64 * 1024
+
+
+@functools.lru_cache(maxsize=16)
+def _resolved_bash_targets(cmd, cwd):
+    """Candidatos de escrita de um comando Bash, já resolvidos (realpath),
+    calculados NO MÁXIMO uma vez por processo para o mesmo (cmd, cwd) —
+    compartilhados pelos 4 guards de estado. Antes deste fix, cada guard
+    chamava write_targets() de novo E resolvia (realpath) CADA candidato de
+    novo (2 realpaths: candidato e alvo), então um comando com milhares de
+    tokens virava milhares de realpaths × 2 × 4 guards.
+    """
+    return frozenset(
+        os.path.realpath(os.path.join(cwd, os.path.expanduser(c)))
+        for c in _write_targets_bash_cached(cmd)
+    )
+
+
+def _toca_arquivo_de_estado(tool, tool_input, cwd, rel):
+    """True/False se dá para verificar se esta chamada escreve em `rel` (um
+    dos 4 arquivos de estado: phase, gate.json, seq, batch.json); None se o
+    comando Bash é grande demais para valer a pena parsear (ver
+    BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL) — quem chama decide o lado seguro.
+    """
+    if tool == "Bash":
+        cmd = tool_input.get("command", "")
+        if not isinstance(cmd, str) or not cmd:
+            return False
+        if len(cmd) > BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL:
+            return None
+        alvo = os.path.realpath(os.path.join(cwd, rel))
+        return alvo in _resolved_bash_targets(cmd, cwd)
+    for t in write_targets(tool, tool_input):
+        if _same_file(t, cwd, rel):
+            return True
+    return False
+
+
+def _bloqueia_se_grande_demais(cwd, nome_arquivo):
+    """Chamado pelos 4 guards de estado quando `_toca_arquivo_de_estado`
+    devolve None (comando grande demais para parsear com segurança, I5).
+
+    Regra do dono do produto: não conseguir verificar não é o mesmo que
+    verificar e estar tudo bem. Mas aqui não há uma verificação FALHANDO
+    (como no gate de regressão) — há uma decisão de CUSTO: parsear um
+    comando de dezenas/centenas de KB por token, em cada um dos 4 guards,
+    era exatamente a regressão de latência que este fix corrige. O lado
+    seguro condicionado: bloqueia se existir QUALQUER gate aberto (há algo
+    em jogo agora que uma escrita não inspecionada poderia comprometer);
+    libera se não houver nenhum gate aberto (nada para proteger agora, e um
+    comando grande é, de longe, mais provável de ser um heredoc legítimo do
+    que uma tentativa de burlar o guard por meio dele).
+    """
+    if not _open_gates_seguro(cwd):
+        return
+    block(
+        f"[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO ({nome_arquivo}). "
+        "Este comando Bash passa de 64KB, tamanho acima do qual o guard não "
+        "reparseia o comando inteiro por token (é a regressão de latência "
+        "que este fix corrige) — então não há como confirmar que ele não "
+        f"escreve em {nome_arquivo}, e existe gate aberto aguardando o PO "
+        "agora. Não conseguir verificar não é o mesmo que verificar e estar "
+        "tudo bem: quebre a operação em comandos menores, ou escreva por um "
+        "caminho que não precise de um comando Bash gigante."
+    )
 
 
 def _open_gates_seguro(cwd):
@@ -775,7 +878,11 @@ def guard_seq_lock(tool, tool_input, cwd):
     dd/install/interpretador inline ou heredoc) — forjaria essa prova de
     turno, por isso é bloqueada aqui, independente de haver gate aberto.
     """
-    if not any(_same_file(t, cwd, SEQ_REL) for t in write_targets(tool, tool_input)):
+    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, SEQ_REL)
+    if toca is None:
+        _bloqueia_se_grande_demais(cwd, ".specgate/seq")
+        return
+    if not toca:
         return
     block(
         "[spec-gate] ESCRITA EM .specgate/seq BLOQUEADA. Este contador de "
@@ -832,7 +939,11 @@ def guard_batch_lock(tool, tool_input, cwd):
     o resultado final não há como confirmar que backlog_aprovado continua
     true, então bloqueia.
     """
-    if not any(_same_file(t, cwd, BATCH_REL) for t in write_targets(tool, tool_input)):
+    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, BATCH_REL)
+    if toca is None:
+        _bloqueia_se_grande_demais(cwd, ".specgate/batch.json")
+        return
+    if not toca:
         return
     if not _gate_po_1_passed_seguro(cwd):
         return  # congelamento ainda não ligou: nada aqui para proteger
@@ -864,7 +975,11 @@ def guard_po_gate(tool, tool_input, cwd):
     gates = _open_gates_seguro(cwd)
     if not gates:
         return
-    if not any(_same_file(t, cwd, PHASE_REL) for t in write_targets(tool, tool_input)):
+    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, PHASE_REL)
+    if toca is None:
+        _bloqueia_se_grande_demais(cwd, ".specgate/phase")
+        return
+    if not toca:
         return
     nomes = ", ".join(str(g.get("checkpoint", "?")) for g in gates)
     block(
@@ -1417,7 +1532,11 @@ def guard_gate_clear(tool, tool_input, cwd):
     comando /spec-gate mais honestidade do modelo, igual ao gatilho de
     granularidade. Documentado assim de propósito, sem inflar.
     """
-    if not any(_same_file(t, cwd, GATE_REL) for t in write_targets(tool, tool_input)):
+    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, GATE_REL)
+    if toca is None:
+        _bloqueia_se_grande_demais(cwd, ".specgate/gate.json")
+        return
+    if not toca:
         return
     abertos = _open_gates_seguro(cwd)
     novos = _gates_from_content(tool, tool_input)

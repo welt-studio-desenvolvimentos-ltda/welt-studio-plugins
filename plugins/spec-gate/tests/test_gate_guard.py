@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1989,6 +1990,73 @@ class TestingPhaseReadEscapeTest(GuardBase):
             "cwd": self.tmp,
         }, self.tmp)
         self.assertEqual(r.returncode, 0)
+
+
+class BashGrandeDemaisTest(GuardBase):
+    """I5 (achado da revisão final): shlex.split é caro por token e
+    write_targets devolvia TODOS os tokens não-flag; os 4 guards de estado
+    (seq/batch/phase/gate.json) refaziam esse parsing E 2 os.path.realpath
+    por candidato CADA UM, para o MESMO comando. Um heredoc comum e
+    legítimo (`cat > arquivo <<'EOF' ... EOF`, dezenas de milhares de
+    linhas) virava uma regressão de latência sentida em todo Bash.
+
+    Acima de ~64KB o comando passa a ser tratado como NÃO VERIFICÁVEL
+    pelos guards de estado: bloqueia se houver qualquer gate aberto (algo
+    em jogo agora que uma escrita não inspecionada poderia comprometer),
+    libera se não houver nada para proteger.
+    """
+
+    def _cmd_grande(self, alvo="algum-arquivo-qualquer.txt"):
+        padding = "x" * 70_000
+        return f"cat > {alvo} <<'EOF'\n{padding}\nEOF\n"
+
+    def test_comando_grande_sem_gate_aberto_e_permitido(self):
+        r = self.bash(self._cmd_grande())
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_comando_grande_com_gate_aberto_e_bloqueado(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 1}
+        ]))
+        r = self.bash(self._cmd_grande())
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("COMANDO GRANDE DEMAIS PARA VERIFICAR", r.stderr)
+
+    def test_comando_pequeno_com_gate_aberto_continua_verificado_normalmente(self):
+        # Não-regressão: abaixo do limite, o comportamento de sempre
+        # continua valendo — o comando pequeno escrevendo phase é
+        # bloqueado pela razão de sempre, não pela de "grande demais".
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 1}
+        ]))
+        r = self.bash("printf 'implementing' > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+        self.assertNotIn("GRANDE DEMAIS", r.stderr)
+
+    def test_comando_grande_e_processado_rapido(self):
+        # Prova de desempenho (I5): limite generoso só para travar a
+        # regressão como teste automatizado — a medição de verdade (antes/
+        # depois, 250KB e 1MB) está no relatório final.
+        t0 = time.perf_counter()
+        r = self.bash(self._cmd_grande())
+        dt = time.perf_counter() - t0
+        self.assertLess(dt, 1.5, msg=f"levou {dt:.3f}s (rc={r.returncode})")
+
+    def test_leitura_de_source_em_comando_grande_e_permitida_na_fase_de_testes(self):
+        # O guard de LEITURA (fase de testes) faz a escolha oposta à dos
+        # guards de ESTADO: um comando grande demais para valer a pena
+        # parsear é, de longe, mais provável de ser um heredoc legítimo do
+        # que uma tentativa de ler source_paths por esse caminho (quem
+        # quiser espiar o código não precisa de 64KB de comando) — friction
+        # desproporcional ao risco, então o lado seguro aqui é LIBERAR.
+        os.makedirs(os.path.join(self.tmp, "src"), exist_ok=True)
+        with open(os.path.join(self.tmp, "src", "somar.py"), "w", encoding="utf-8") as fh:
+            fh.write("def somar(a, b):\n    return a + b\n")
+        self.state("phase", "testing")
+        padding = " " * 70_000
+        r = self.bash(f"cat src/somar.py{padding}")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
 
 if __name__ == "__main__":
