@@ -1578,6 +1578,153 @@ class SpecLockInterpreterEscapeTest(GuardBase):
         self.assertEqual(r.returncode, 0)
 
 
+class SpecLockRetomadaAmbiguidadeTest(GuardBase):
+    """C1: o ciclo de estacionamento precisa fechar. O gate de ambiguidade
+    estaciona um PBI; o PO responde; e a retomada exige atualizar a spec
+    DAQUELE PBI com a decisão — mas antes desta correção, guard_spec_lock
+    bloqueava toda escrita em docs/backlog/ depois do backlog aprovado,
+    sem distinguir esse caso, mesmo essa.
+
+    A solução: uma janela de escrita ESTREITA, amarrada ao turno do PO —
+    reusa o mesmo `has_human_turn_since` dos outros gates, em vez de um
+    mecanismo novo. Abre só quando o gate VIGENTE (maior rodada) daquele
+    PBI é (checkpoint="ambiguidade", status="respondido") E há turno
+    humano real depois de `opened_at_seq`; abre só para o arquivo exato do
+    campo `pbi` do gate, nunca o diretório inteiro; e fecha quando o gate
+    ganha rodada nova (a rodada anterior deixa de ser vigente) ou quando a
+    fase avança de novo (o retomada reativou `.specgate/phase`).
+    """
+
+    PBI_PATH = "docs/backlog/03-x.md"
+    OUTRO_PBI_PATH = "docs/backlog/04-y.md"
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        with open(os.path.join(self.tmp, self.PBI_PATH), "w", encoding="utf-8") as fh:
+            fh.write("# spec original")
+        with open(os.path.join(self.tmp, self.OUTRO_PBI_PATH), "w", encoding="utf-8") as fh:
+            fh.write("# outra spec")
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+
+    def _abre_gate_respondido(self, opened_at_seq=3, rodada=1, pbi=None, extra=None):
+        gates = [{
+            "checkpoint": "ambiguidade",
+            "pbi": pbi or self.PBI_PATH,
+            "rodada": rodada,
+            "status": "respondido",
+            "opened_at_seq": opened_at_seq,
+            "questions": ["decisão registrada"],
+        }]
+        if extra:
+            gates.extend(extra)
+        self.state("gate.json", json.dumps(gates))
+
+    def _seq(self, valor):
+        self.state("seq", str(valor))
+
+    def _escreve_spec(self, path=None):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": path or self.PBI_PATH, "content": "# spec atualizada"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_respondido_com_turno_posterior_edita_a_spec_daquele_pbi(self):
+        self._abre_gate_respondido(opened_at_seq=3)
+        self._seq(5)  # turno humano depois da abertura (seq_atual > opened_at_seq)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_respondido_sem_turno_novo_bloqueia(self):
+        self._abre_gate_respondido(opened_at_seq=3)
+        self._seq(3)  # nenhum turno depois da abertura (seq_atual == opened_at_seq)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_janela_aberta_nao_libera_spec_de_outro_pbi(self):
+        self._abre_gate_respondido(opened_at_seq=3, pbi=self.PBI_PATH)
+        self._seq(5)
+        r = self._escreve_spec(path=self.OUTRO_PBI_PATH)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_gate_ainda_aguardando_po_nao_abre_janela(self):
+        # Status errado (ainda não respondido): não é a exceção, é a regra
+        # normal de congelamento.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": self.PBI_PATH, "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 3}
+        ]))
+        self._seq(5)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_rodada_nova_fecha_a_janela_da_rodada_anterior(self):
+        # Gate vigente agora é a rodada 2 (aguardando-po de novo) — a
+        # rodada 1 respondida virou histórico, não é mais vigente. "Fecha
+        # quando o gate ganha rodada nova."
+        self._abre_gate_respondido(opened_at_seq=3, extra=[{
+            "checkpoint": "ambiguidade", "pbi": self.PBI_PATH, "rodada": 2,
+            "status": "aguardando-po", "opened_at_seq": 6,
+        }])
+        self._seq(9)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_fase_ja_avancada_fecha_a_janela_mesmo_com_turno_novo(self):
+        # "Fecha quando a fase avança": o retomada já reativou a fase (o
+        # PBI seguiu adiante) antes desta escrita — a janela já não é mais
+        # para isto.
+        self._abre_gate_respondido(opened_at_seq=3)
+        self._seq(5)
+        self.state("phase", "testing")
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_checkpoint_diferente_de_ambiguidade_nao_abre_janela(self):
+        # A janela é uma exceção NARROW ao congelamento — só para o gate de
+        # ambiguidade respondido, não para qualquer gate decidido.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": self.PBI_PATH, "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 3}
+        ]))
+        self._seq(5)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_janela_nao_libera_bash_write_fora_do_arquivo_do_pbi(self):
+        self._abre_gate_respondido(opened_at_seq=3)
+        self._seq(5)
+        r = self.bash(f"echo hackeado > {self.OUTRO_PBI_PATH}")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_janela_libera_tambem_via_bash_write_no_arquivo_certo(self):
+        # A janela usa write_targets (o mesmo reconhecimento de escrita dos
+        # outros guards), então cobre Bash reconhecido, não só Write.
+        self._abre_gate_respondido(opened_at_seq=3)
+        self._seq(5)
+        r = self.bash(f"echo atualizado > {self.PBI_PATH}")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_sem_seq_no_disco_e_sem_turno_bloqueia(self):
+        # Ausência de .specgate/seq (nunca houve turno algum) não pode ser
+        # lida como "turno aconteceu" — has_human_turn_since já cobre isso
+        # (read_seq ausente devolve 0), este teste prova que a janela nova
+        # não reabre esse furo.
+        self._abre_gate_respondido(opened_at_seq=3)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+
 class BatchLockTest(GuardBase):
     """Pendência 5 (quinta instância do padrão de design): .specgate/batch.json
     guarda o campo backlog_aprovado que liga o congelamento da spec

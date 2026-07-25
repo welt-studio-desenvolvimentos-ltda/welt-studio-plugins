@@ -117,6 +117,73 @@ BATCH_REL = os.path.join(".specgate", "batch.json")
 STATUS_QUE_LEGITIMAM_RODADA = ("reprovado", "respondido")
 
 
+def _janela_retomada_spec_aberta(cwd, candidate):
+    """C1: a única exceção ao congelamento de docs/backlog/ — a janela de
+    escrita que fecha o ciclo de estacionamento.
+
+    O gate de ambiguidade estaciona um PBI; o PO responde ("respondido");
+    e a retomada exige atualizar a spec DAQUELE PBI com a decisão antes de
+    fazer o merge de volta (ver seção 7 do comando `/spec-gate`). Sem esta
+    janela, `guard_spec_lock` bloqueava essa atualização sempre, sem
+    distinguir este caso — o mesmo congelamento que protege a spec de ser
+    reescrita por quem está sendo julgado também impedia o próprio PO de
+    ver sua decisão registrada, e o ciclo nunca fechava.
+
+    A promessa do congelamento continua de pé: "o agente não altera o
+    contrato por conta própria". O agente escreve, sim, mas só
+    TRANSCREVENDO uma decisão do PO que já está registrada em
+    `.specgate/gate.json` — a fala do PO é pré-condição mecânica, não uma
+    exceção de conveniência. Por isso a janela reusa o MESMO mecanismo que
+    valida qualquer outra decisão de gate (`has_human_turn_since`), em vez
+    de inventar um novo caminho.
+
+    Abre só quando TODAS as condições valem para o gate VIGENTE (maior
+    rodada, via `gates_vigentes` — o mesmo seletor usado pelo board, pelo
+    dashboard e pela statusline) de uma série (checkpoint, pbi):
+
+    1. `checkpoint == "ambiguidade"` — nenhum outro checkpoint decide com
+       o vocabulário "respondido", e esta janela não é uma chave mestra
+       para gates decididos em geral (backlog/testes/aceite continuam sem
+       nenhuma exceção ao congelamento).
+    2. `status == "respondido"` — o PO decidiu a ambiguidade.
+    3. `has_human_turn_since(cwd, opened_at_seq)` — um turno REAL do PO
+       aconteceu depois que este gate abriu. Esta é a mesma checagem que
+       `guard_gate_clear` usa para aceitar qualquer decisão de gate; não
+       há checagem nova para burlar aqui.
+    4. `current_phase(cwd) == ""` — o retomada ainda não reativou a fase
+       (a seção 7 do comando desativa a fase ANTES de abrir o gate de
+       ambiguidade, e só a reativa DEPOIS do merge de volta). Assim que a
+       fase avança de novo, a janela fecha, mesmo que o gate continue
+       "respondido" — "fecha quando a fase avança".
+    5. `candidate` é EXATAMENTE o arquivo do campo `pbi` do gate (via
+       `_same_file`, comparação de caminho resolvido) — nunca o diretório
+       `docs/backlog/` inteiro, nunca a spec de outro PBI. Janela do
+       tamanho do buraco, não do corredor.
+
+    "Fecha quando o gate ganha rodada nova" não precisa de lógica extra:
+    `gates_vigentes` já devolve só a rodada de MAIOR número por série. Se o
+    mesmo PBI encontrar outra ambiguidade depois, a rodada nova abre como
+    "aguardando-po" (ver `_rodada_invalida` em `guard_gate_clear`) e passa
+    a ser a vigente — a rodada anterior "respondido" deixa de contar aqui,
+    sem que esta função precise saber nada sobre rodadas.
+    """
+    if not candidate:
+        return False
+    if current_phase(cwd) != "":
+        return False
+    for g in _gates_vigentes_seguro(cwd):
+        if g.get("checkpoint") != "ambiguidade" or g.get("status") != "respondido":
+            continue
+        pbi = g.get("pbi")
+        if not isinstance(pbi, str) or not pbi:
+            continue
+        if not _same_file(candidate, cwd, pbi):
+            continue
+        if _has_human_turn_seguro(cwd, g.get("opened_at_seq", 0)):
+            return True
+    return False
+
+
 def guard_spec_lock(tool, tool_input, cwd, cfg):
     spec_paths = cfg.get("spec_paths", ["docs/backlog"])
     spec_dirs = norm_paths(cwd, spec_paths)
@@ -127,7 +194,13 @@ def guard_spec_lock(tool, tool_input, cwd, cfg):
         "é o contrato que julga o trabalho, então ela não pode ser alterada por quem "
         "está sendo julgado ({alvo}). Se você acredita que a spec está errada, "
         "PARE o pipeline e apresente o caso ao usuário: o que a spec diz, o que "
-        "você encontrou, e qual mudança propõe. Só o usuário altera o contrato."
+        "você encontrou, e qual mudança propõe. Só o usuário altera o contrato. "
+        "Exceção: a spec DESTE PBI abre uma janela estreita de escrita quando o "
+        "gate de ambiguidade dele está 'respondido' com um turno real do PO "
+        "depois da abertura (retomada de estacionamento) — se você está "
+        "transcrevendo a decisão que o PO acabou de dar sobre este PBI, "
+        "confira se o gate já está 'respondido' e se a fase ainda não foi "
+        "reativada; se ainda estiver bloqueado, PARE e explique."
     )
     # Usa write_targets (a mesma extração de alvos dos outros guards) para
     # herdar o reconhecimento de interpretador inline/heredoc e dd/install —
@@ -138,8 +211,11 @@ def guard_spec_lock(tool, tool_input, cwd, cfg):
     # _same_file usado pelos guards de arquivo único — spec_paths são
     # diretórios, então qualquer arquivo dentro deles precisa ser pego.
     for t in write_targets(tool, tool_input):
-        if touches_source(t, cwd, spec_dirs):
-            block(reason.format(alvo=t))
+        if not touches_source(t, cwd, spec_dirs):
+            continue
+        if _janela_retomada_spec_aberta(cwd, t):
+            continue
+        block(reason.format(alvo=t))
 
 
 def load_config(cwd):
@@ -591,6 +667,23 @@ def _read_gates_seguro(cwd):
         return []
     try:
         return specgate_state.read_gates(cwd)
+    except Exception:
+        return []
+
+
+def _gates_vigentes_seguro(cwd):
+    """Wrapper fail-open sobre specgate_state.gates_vigentes.
+
+    Mesmo raciocínio de `_open_gates_seguro`: módulo ausente ou quebrado ->
+    lista vazia, que é o lado permissivo para quem usa isto (a janela de
+    retomada da spec, `_janela_retomada_spec` abaixo) — sem saber qual gate
+    é o vigente, a janela simplesmente não abre, e o congelamento normal de
+    docs/backlog/ continua valendo.
+    """
+    if specgate_state is None:
+        return []
+    try:
+        return specgate_state.gates_vigentes(cwd)
     except Exception:
         return []
 
