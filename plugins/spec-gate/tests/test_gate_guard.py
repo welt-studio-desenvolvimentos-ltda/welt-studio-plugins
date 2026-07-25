@@ -786,7 +786,18 @@ class RodadaTest(GuardBase):
         ]))
         self.assertEqual(r.returncode, 2)
 
-    def test_repetir_rodada_existente_e_bloqueado(self):
+    def test_repetir_rodada_ja_decidida_e_bloqueado_por_gate_imutavel(self):
+        # Nome anterior deste teste ("test_repetir_rodada_existente_e_
+        # bloqueado") prometia exercitar a amarra 1 (repetir número de
+        # rodada). Auditoria mostrou que isso é falso: a chave completa
+        # (checkpoint, pbi, rodada=1) que esta escrita declara é EXATAMENTE
+        # a mesma da entrada já decidida em disco, então `_rodada_invalida`
+        # a trata como preservação (não como abertura nova) e nem chega a
+        # avaliar amarra nenhuma — quem bloqueia é a categoria 2 de
+        # `_mutacao_invalida` (gate decidido é imutável). O teste antigo
+        # passava mesmo com `_rodada_invalida` inteiramente desligada; por
+        # isso o nome foi trocado e a asserção agora confirma o mecanismo
+        # que de fato bloqueia.
         self.state("gate.json", json.dumps([
             {"checkpoint": "testes", "pbi": "03", "rodada": 1,
              "status": "reprovado", "opened_at_seq": 5},
@@ -797,6 +808,7 @@ class RodadaTest(GuardBase):
              "status": "aguardando-po", "opened_at_seq": 10},
         ]))
         self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DECIDIDO É IMUTÁVEL BLOQUEADO", r.stderr)
 
     def test_rodada_seguinte_com_opened_at_seq_antedatado_e_bloqueada(self):
         self.state("gate.json", json.dumps([
@@ -895,6 +907,116 @@ class RodadaTest(GuardBase):
         ]))
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
+
+
+class RodadaStatusQueLegitimamTest(GuardBase):
+    """Task 9 (bug reportado): o checkpoint 'ambiguidade' não decide com
+    'reprovado' — a convenção dele é 'respondido'. Antes deste fix, a
+    amarra 2 só reconhecia 'reprovado' como legitimador de rodada seguinte,
+    então uma vez que (ambiguidade, pbi) saía de 'aguardando-po' com status
+    'respondido', a chave congelava para sempre: uma ambiguidade NOVA do
+    MESMO PBI não conseguia abrir rodada 2 nem omitindo `rodada` (cai na
+    imutabilidade do gate decidido) nem declarando `rodada: 2` (bloqueada
+    por falta de reprovação — que nunca existiu para este checkpoint).
+
+    A correção é uma lista única, `STATUS_QUE_LEGITIMAM_RODADA`, com
+    'reprovado' e 'respondido' lado a lado — nenhuma condicional por
+    checkpoint. Os dois primeiros testes abaixo são o caso central: o
+    positivo (mesmo PBI, ambiguidade Q1 respondida, Q2 diferente surge,
+    reestacionar precisa abrir rodada 2) e o negativo que prova que a
+    amarra não afrouxou (rodada 1 ainda 'aguardando-po', sem decisão
+    nenhuma registrada, não libera rodada 2 nenhuma).
+    """
+
+    def _escreve_gate(self, content):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/gate.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_ambiguidade_respondida_libera_rodada_seguinte_do_mesmo_pbi(self):
+        # Caso real do bug: PBI-05 estacionado por ambiguidade Q1, rodada 1
+        # decidida como 'respondido'. Trabalho retoma, uma ambiguidade
+        # DIFERENTE (Q2) surge depois — reestacionar o mesmo PBI precisa
+        # abrir a rodada 2 do gate de ambiguidade, com opened_at_seq = seq
+        # atual. Isto tem que ser PERMITIDO.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "respondido", "opened_at_seq": 5,
+             "questions": ["Q1?"]},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "respondido", "opened_at_seq": 5,
+             "questions": ["Q1?"]},
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10,
+             "questions": ["Q2?"]},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_ambiguidade_ainda_aguardando_po_nao_libera_rodada_seguinte(self):
+        # Teste negativo que prova que a amarra NÃO afrouxou: a rodada 1
+        # ainda está 'aguardando-po' (ninguém decidiu nada, nem
+        # 'respondido' nem qualquer outro status) — abrir a rodada 2 tem
+        # que continuar BLOQUEADO. Sem esta distinção, a correção do bug
+        # viraria uma porta de escape para reabrir gate pendente a
+        # qualquer momento.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5,
+             "questions": ["Q1?"]},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5,
+             "questions": ["Q1?"]},
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10,
+             "questions": ["Q2?"]},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA", r.stderr)
+
+    def test_ambiguidade_aprovada_nao_libera_rodada_seguinte(self):
+        # Não-regressão: 'aprovado' continua fora da lista que legitima
+        # rodada seguinte, mesmo para o checkpoint 'ambiguidade' — não faz
+        # sentido semântico real (ambiguidade não se "aprova"), mas prova
+        # que a lista não virou um "qualquer status decidido libera".
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 5},
+            {"checkpoint": "ambiguidade", "pbi": "05", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA", r.stderr)
+
+    def test_aceite_reprovado_continua_legitimando_rodada_seguinte(self):
+        # Não-regressão: o checkpoint 'aceite' (que decide com 'reprovado',
+        # igual a 'testes' e 'backlog') precisa continuar funcionando
+        # exatamente como antes — a lista ganhou 'respondido' ao lado de
+        # 'reprovado', não substituiu nada.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "aceite", "pbi": "05", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "aceite", "pbi": "05", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "aceite", "pbi": "05", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
 
 class MainFailOpenPayloadTest(GuardBase):

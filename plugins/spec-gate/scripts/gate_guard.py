@@ -100,6 +100,20 @@ GATE_REL = os.path.join(".specgate", "gate.json")
 SEQ_REL = os.path.join(".specgate", "seq")
 BATCH_REL = os.path.join(".specgate", "batch.json")
 
+# Amarra 2 do mecanismo de rodada (Task 9): quais status DECIDIDOS de uma
+# rodada anterior legitimam abrir a rodada seguinte da mesma série
+# (checkpoint, pbi). Nem todo checkpoint decide com o mesmo vocabulário —
+# 'testes', 'backlog' e 'aceite' decidem com 'reprovado'/'aprovado', mas o
+# checkpoint 'ambiguidade' decide com 'respondido' (não existe "aprovar"
+# ou "reprovar" uma ambiguidade). Lista ÚNICA, checada por todo checkpoint
+# igualmente: nenhuma condicional por nome de checkpoint em lugar nenhum
+# do guard. A lição do bug relatado é exatamente essa — a convenção de
+# status do checkpoint 'ambiguidade' foi assumida em um lugar (o comando
+# /spec-gate) e não no outro (aqui), e a chave congelava para sempre depois
+# da primeira ambiguidade respondida. 'aprovado' fica de fora de propósito:
+# um PBI aprovado não está "brigando", não há o que legitimar de novo.
+STATUS_QUE_LEGITIMAM_RODADA = ("reprovado", "respondido")
+
 
 def guard_spec_lock(tool, tool_input, cwd, cfg):
     spec_paths = cfg.get("spec_paths", ["docs/backlog"])
@@ -732,9 +746,11 @@ def _rodada_invalida(anteriores, novos):
       disto, pela categoria 2 de `_mutacao_invalida`, gate decidido
       imutável).
     - ofensores_sem_reprovacao (amarra 2 — quem legitima a rodada seguinte
-      é uma REPROVAÇÃO REGISTRADA, não a vontade de quem escreve): toda
-      rodada > 1 exige que a rodada imediatamente anterior da MESMA série
-      já exista no estado anterior em disco com `status == "reprovado"`.
+      é um EVENTO DE DECISÃO REGISTRADO, não a vontade de quem escreve):
+      toda rodada > 1 exige que a rodada imediatamente anterior da MESMA
+      série já exista no estado anterior em disco com status em
+      `STATUS_QUE_LEGITIMAM_RODADA` ('reprovado' ou 'respondido' — lista
+      única, a mesma para qualquer checkpoint, sem condicional por nome).
       Rodada anterior 'aprovado' (o PBI passou, não há o que reabrir) ou
       ainda 'aguardando-po' (ninguém decidiu nada ainda) não legitima nada.
     """
@@ -763,7 +779,7 @@ def _rodada_invalida(anteriores, novos):
             legitima = any(
                 _pbi_series_key(a) == serie
                 and _rodada_int(a) == anterior_rodada
-                and a.get("status") == "reprovado"
+                and a.get("status") in STATUS_QUE_LEGITIMAM_RODADA
                 for a in anteriores
             )
             if not legitima:
@@ -1112,8 +1128,10 @@ def guard_gate_clear(tool, tool_input, cwd):
     uma rodada nova passa por DUAS amarras adicionais, checadas antes das
     5 categorias (`_rodada_invalida`): a rodada é sempre
     max(rodada existente da série) + 1 (nunca pulada, nunca repetida), e só
-    é legítima se a rodada anterior daquela série está REGISTRADA como
-    'reprovado' — 'aprovado' ou ainda 'aguardando-po' não abrem porta
+    é legítima se a rodada anterior daquela série está REGISTRADA com
+    status em `STATUS_QUE_LEGITIMAM_RODADA` ('reprovado' ou 'respondido',
+    conforme o checkpoint — lista única, sem condicional por nome de
+    checkpoint) — 'aprovado' ou ainda 'aguardando-po' não abrem porta
     nenhuma. Cada chave cai em exatamente uma destas 5 categorias:
 
     1. Chave estava 'aguardando-po' antes: preservada idêntica é OK;
@@ -1234,9 +1252,10 @@ def guard_gate_clear(tool, tool_input, cwd):
 
     # Amarras 1 e 2 do mecanismo de rodada: a rodada de uma abertura nova é
     # sempre DERIVADA (max da série + 1, nunca pulada nem repetida) e só é
-    # legítima quando a rodada anterior da mesma série está REGISTRADA como
-    # 'reprovado'. Checado antes de `_mutacao_invalida` pelo mesmo motivo da
-    # Aresta A: é sobre a identidade/abertura da chave, não sobre decisão.
+    # legítima quando a rodada anterior da mesma série está REGISTRADA com
+    # status em STATUS_QUE_LEGITIMAM_RODADA. Checado antes de
+    # `_mutacao_invalida` pelo mesmo motivo da Aresta A: é sobre a
+    # identidade/abertura da chave, não sobre decisão.
     ofensores_rodada_pulada, ofensores_sem_reprovacao = _rodada_invalida(anteriores, novos)
     if ofensores_rodada_pulada:
         nomes = ", ".join(_gate_label(g) for g in ofensores_rodada_pulada)
@@ -1250,13 +1269,14 @@ def guard_gate_clear(tool, tool_input, cwd):
 
     if ofensores_sem_reprovacao:
         nomes = ", ".join(_gate_label(g) for g in ofensores_sem_reprovacao)
+        status_legitimos = " ou ".join(f"'{s}'" for s in STATUS_QUE_LEGITIMAM_RODADA)
         block(
             f"[spec-gate] RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA ({nomes}). "
-            "Só uma reprovação REGISTRADA (status 'reprovado') da rodada "
-            "anterior daquele checkpoint+pbi legitima abrir a rodada "
-            "seguinte — rodada anterior 'aprovado' (o PBI já passou) ou "
-            "ainda 'aguardando-po' (ninguém decidiu) não abre porta nenhuma "
-            "para a próxima."
+            f"Só um evento de decisão REGISTRADO (status {status_legitimos} — "
+            "conforme o checkpoint) da rodada anterior daquele checkpoint+pbi "
+            "legitima abrir a rodada seguinte — rodada anterior 'aprovado' "
+            "(o PBI já passou) ou ainda 'aguardando-po' (ninguém decidiu) "
+            "não abre porta nenhuma para a próxima."
         )
 
     # Aresta A: abertura/reabertura antedatada, e decisão que altera o

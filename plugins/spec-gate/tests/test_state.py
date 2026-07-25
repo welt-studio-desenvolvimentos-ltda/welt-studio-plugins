@@ -100,13 +100,23 @@ class StateTest(unittest.TestCase):
         self.assertEqual(vigentes[0]["rodada"], 3)
 
     def test_gates_vigentes_rodada_ausente_e_tratada_como_1(self):
-        # Compatibilidade: gate legado sem "rodada" (rodada implícita 1)
-        # não pode ser eclipsado por engano.
+        # Auditoria: a versão anterior deste teste chamava open_gates (não a
+        # própria gates_vigentes que o nome promete) com uma fixture de UMA
+        # entrada só — isso nunca exercitava eclipsamento nenhum, só provava
+        # que uma entrada sem "rodada" aparece como aberta, algo que já é
+        # coberto por outros testes. A versão corrigida chama gates_vigentes
+        # diretamente e usa DUAS rodadas da mesma série: a entrada legada
+        # sem "rodada" (implícita 1) precisa ser eclipsada pela rodada 2
+        # explícita — provando que a ausência do campo é tratada como 1 DE
+        # VERDADE (nem 0, nem um valor que escaparia da comparação por
+        # maior rodada e "vazaria" as duas entradas como vigentes).
         self._write("gate.json", json.dumps([
-            {"checkpoint": "testes", "pbi": "03", "status": "aguardando-po"},
+            {"checkpoint": "testes", "pbi": "03", "status": "reprovado"},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "aguardando-po"},
         ]))
-        abertos = st.open_gates(self.tmp)
-        self.assertEqual(len(abertos), 1)
+        vigentes = st.gates_vigentes(self.tmp)
+        self.assertEqual(len(vigentes), 1)
+        self.assertEqual(vigentes[0]["rodada"], 2)
 
     def test_has_human_turn_since(self):
         self._write("seq", "15")
