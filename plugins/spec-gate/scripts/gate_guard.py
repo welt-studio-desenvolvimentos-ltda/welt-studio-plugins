@@ -643,8 +643,147 @@ def guard_po_gate(tool, tool_input, cwd):
     )
 
 
+def _rodada_int(g):
+    """Número da rodada de um gate, como int >= 1 — ou None se o campo
+    está PRESENTE mas malformado (nunca levanta, para não gerar traceback
+    num hook bloqueante).
+
+    Ausência da chave "rodada" no dict é tratada como 1: gates gravados
+    antes deste fix não têm o campo, e tratá-los como rodada 1 é o que
+    permite abrir a "rodada 2" de uma chave antiga sem quebrar o estado
+    existente (compatibilidade, não um caso especial de exceção).
+
+    Presente mas malformado (string não numérica, float, negativo,
+    booleano — que em Python é subclasse de int e por isso é rejeitado
+    explicitamente — lista, dict, null) devolve None; o chamador decide o
+    lado seguro, que em `guard_gate_clear` é sempre bloquear a escrita
+    inteira antes de usar o valor para qualquer comparação.
+    """
+    if "rodada" not in g:
+        return 1
+    v = g.get("rodada")
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v >= 1 else None
+    if isinstance(v, str):
+        s = v.strip()
+        if not re.fullmatch(r"-?\d+", s):
+            return None
+        n = int(s)
+        return n if n >= 1 else None
+    return None
+
+
 def _gate_key(g):
+    """Identidade completa de uma entrada de gate: (checkpoint, pbi, rodada).
+
+    A rodada entrou na chave (Task 9) para permitir reabrir o MESMO
+    (checkpoint, pbi) numa rodada seguinte sem colidir com o registro já
+    decidido da rodada anterior — sem isto, "reprovado" e "aprovado" do
+    mesmo PBI seriam a mesma chave, e reabrir caía sempre na categoria 2 de
+    `_mutacao_invalida` (gate decidido é imutável). Rodada malformada vira
+    None aqui (nunca gera exceção); a escrita inteira é bloqueada antes de
+    esta chave ser usada para agrupar seja o que for — ver
+    `_rodadas_malformadas`, checada em `guard_gate_clear` antes de qualquer
+    lógica que dependa de `_gate_key`.
+    """
+    return (str(g.get("checkpoint", "")), str(g.get("pbi", "")), _rodada_int(g))
+
+
+def _pbi_series_key(g):
+    """Identidade da SÉRIE de rodadas de um gate: (checkpoint, pbi), sem a
+    rodada. Usada só pelas amarras 1 e 2 (`_rodada_invalida`), que
+    precisam enxergar TODAS as rodadas históricas de um mesmo
+    (checkpoint, pbi) para derivar a próxima e checar a reprovação que a
+    legitima — o que `_gate_key` (com rodada embutida) não permite, porque
+    cada rodada tem sua própria chave completa.
+    """
     return (str(g.get("checkpoint", "")), str(g.get("pbi", "")))
+
+
+def _rodadas_malformadas(novos):
+    """Entradas em `novos` cujo campo "rodada" está PRESENTE mas é
+    inválido (ausência é tratada como 1 em `_rodada_int`, não malformação).
+    """
+    return [g for g in novos if "rodada" in g and _rodada_int(g) is None]
+
+
+def _rodada_invalida(anteriores, novos):
+    """Amarras 1 e 2 do mecanismo de rodada (Task 9): valida a ABERTURA
+    genuína de uma rodada nova de uma série (checkpoint, pbi).
+
+    Só examina entradas que representam uma abertura de verdade: status
+    'aguardando-po' cuja chave completa (checkpoint, pbi, rodada) nunca
+    existiu no estado anterior. Preservação de uma rodada já aberta e
+    decisão de uma rodada existente não passam por aqui — são território
+    de `_mutacao_invalida`, que já lida com elas pela chave completa.
+
+    Devolve (ofensores_pulo, ofensores_sem_reprovacao):
+
+    - ofensores_pulo (amarra 1 — a rodada é DERIVADA, não escolhida): a
+      rodada declarada precisa ser exatamente
+      max(rodadas já existentes da série) + 1 — nunca pulada (abrir a
+      rodada 3 direto de uma série que só tem rodada 1) nem repetida
+      (rodada 1 nova enquanto a rodada 1 histórica já existe: esse caso
+      cai aqui só quando a chave completa ainda assim é "nova", o que só
+      acontece se `anteriores` tiver rodadas malformadas por baixo — o
+      caso comum de repetir uma rodada já registrada é bloqueado antes
+      disto, pela categoria 2 de `_mutacao_invalida`, gate decidido
+      imutável).
+    - ofensores_sem_reprovacao (amarra 2 — quem legitima a rodada seguinte
+      é uma REPROVAÇÃO REGISTRADA, não a vontade de quem escreve): toda
+      rodada > 1 exige que a rodada imediatamente anterior da MESMA série
+      já exista no estado anterior em disco com `status == "reprovado"`.
+      Rodada anterior 'aprovado' (o PBI passou, não há o que reabrir) ou
+      ainda 'aguardando-po' (ninguém decidiu nada ainda) não legitima nada.
+    """
+    anteriores_completa = {_gate_key(a) for a in anteriores}
+    ofensores_pulo = []
+    ofensores_sem_reprovacao = []
+    for g in novos:
+        if g.get("status") != "aguardando-po":
+            continue
+        rodada = _rodada_int(g)
+        if rodada is None:
+            continue  # malformada: já bloqueada à parte por _rodadas_malformadas
+        if _gate_key(g) in anteriores_completa:
+            continue  # não é abertura nova desta rodada — é preservação
+        serie = _pbi_series_key(g)
+        existentes = [
+            _rodada_int(a) for a in anteriores if _pbi_series_key(a) == serie
+        ]
+        existentes = [r for r in existentes if r is not None]
+        esperado = (max(existentes) if existentes else 0) + 1
+        if rodada != esperado:
+            ofensores_pulo.append(g)
+            continue
+        if rodada > 1:
+            anterior_rodada = rodada - 1
+            legitima = any(
+                _pbi_series_key(a) == serie
+                and _rodada_int(a) == anterior_rodada
+                and a.get("status") == "reprovado"
+                for a in anteriores
+            )
+            if not legitima:
+                ofensores_sem_reprovacao.append(g)
+    return ofensores_pulo, ofensores_sem_reprovacao
+
+
+def _gate_label(g):
+    """Rótulo legível de uma entrada de gate para mensagens de bloqueio:
+    checkpoint, PBI (se houver) e rodada — a rodada aparece sempre, mesmo
+    quando ausente no JSON (rodada 1 implícita), porque é exatamente esse
+    número que dá o dado útil de "PBI-03 está na rodada 3" (está brigando).
+    """
+    checkpoint = g.get("checkpoint", "?")
+    pbi = g.get("pbi")
+    rodada = g.get("rodada", 1)
+    label = str(checkpoint)
+    if pbi:
+        label += f"/{pbi}"
+    return f"{label} (rodada {rodada})"
 
 
 def _gates_from_content(tool, tool_input):
@@ -964,8 +1103,18 @@ def guard_gate_clear(tool, tool_input, cwd):
     """Impede o Claude de se auto-liberar escrevendo no gate.json.
 
     MODELO UNIFICADO — toda escrita é validada chave a chave (checkpoint,
-    pbi), comparando o conteúdo NOVO contra o estado ANTERIOR completo em
-    disco. Cada chave cai em exatamente uma destas 5 categorias:
+    pbi, rodada — ver `_gate_key`), comparando o conteúdo NOVO contra o
+    estado ANTERIOR completo em disco. A rodada (Task 9) entrou na chave
+    para separar cada tentativa de decisão de um mesmo (checkpoint, pbi):
+    sem ela, reprovar e depois reabrir para rework era a MESMA chave, e
+    "gate decidido é imutável" (categoria 2 abaixo) bloqueava o rework
+    legítimo junto com o flip-flop que a regra existe para impedir. Abrir
+    uma rodada nova passa por DUAS amarras adicionais, checadas antes das
+    5 categorias (`_rodada_invalida`): a rodada é sempre
+    max(rodada existente da série) + 1 (nunca pulada, nunca repetida), e só
+    é legítima se a rodada anterior daquela série está REGISTRADA como
+    'reprovado' — 'aprovado' ou ainda 'aguardando-po' não abrem porta
+    nenhuma. Cada chave cai em exatamente uma destas 5 categorias:
 
     1. Chave estava 'aguardando-po' antes: preservada idêntica é OK;
        reaberta (mesmo status, `opened_at_seq` diferente) exige
@@ -1065,6 +1214,50 @@ def guard_gate_clear(tool, tool_input, cwd):
     # `anteriores` (estado completo em disco), então sempre computamos e
     # chamamos, mesmo com `abertos` vazio.
     anteriores = _read_gates_seguro(cwd)
+
+    # Rodada malformada (Task 9): checado ANTES de qualquer lógica que use
+    # `_gate_key`/`_rodada_int` para agrupar ou comparar — um valor
+    # presente mas inválido (string não numérica, float, negativo,
+    # booleano, lista...) não pode virar identidade de gate nenhuma.
+    # Ausência do campo é tratada como rodada 1 em `_rodada_int` (nunca cai
+    # aqui); só a presença malformada bloqueia.
+    malformadas = _rodadas_malformadas(novos)
+    if malformadas:
+        nomes = ", ".join(str(g.get("rodada")) for g in malformadas)
+        block(
+            f"[spec-gate] RODADA INVÁLIDA BLOQUEADA (valor: {nomes}). O campo "
+            "'rodada' precisa ser um inteiro >= 1 (ou string equivalente). "
+            "Omitir o campo é tratado como rodada 1 por compatibilidade, mas "
+            "um valor presente e malformado não pode ser usado para "
+            "identificar o gate — corrija o número antes de escrever."
+        )
+
+    # Amarras 1 e 2 do mecanismo de rodada: a rodada de uma abertura nova é
+    # sempre DERIVADA (max da série + 1, nunca pulada nem repetida) e só é
+    # legítima quando a rodada anterior da mesma série está REGISTRADA como
+    # 'reprovado'. Checado antes de `_mutacao_invalida` pelo mesmo motivo da
+    # Aresta A: é sobre a identidade/abertura da chave, não sobre decisão.
+    ofensores_rodada_pulada, ofensores_sem_reprovacao = _rodada_invalida(anteriores, novos)
+    if ofensores_rodada_pulada:
+        nomes = ", ".join(_gate_label(g) for g in ofensores_rodada_pulada)
+        block(
+            f"[spec-gate] RODADA FORA DE SEQUÊNCIA BLOQUEADA ({nomes}). A "
+            "rodada de uma abertura nova é DERIVADA, não escolhida: precisa "
+            "ser exatamente max(rodada já existente daquele checkpoint+pbi) + "
+            "1 — nunca pulando um número, nunca repetindo uma rodada já "
+            "registrada. Abra a próxima rodada na sequência certa."
+        )
+
+    if ofensores_sem_reprovacao:
+        nomes = ", ".join(_gate_label(g) for g in ofensores_sem_reprovacao)
+        block(
+            f"[spec-gate] RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA ({nomes}). "
+            "Só uma reprovação REGISTRADA (status 'reprovado') da rodada "
+            "anterior daquele checkpoint+pbi legitima abrir a rodada "
+            "seguinte — rodada anterior 'aprovado' (o PBI já passou) ou "
+            "ainda 'aguardando-po' (ninguém decidiu) não abre porta nenhuma "
+            "para a próxima."
+        )
 
     # Aresta A: abertura/reabertura antedatada, e decisão que altera o
     # opened_at_seq do gate aberto. Barra ANTES de examinar deleção/turno —

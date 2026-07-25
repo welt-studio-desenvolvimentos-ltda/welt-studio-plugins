@@ -707,6 +707,196 @@ class AberturaAntedatadaTest(GuardBase):
         self.assertIn("AUTO-LIBERAÇÃO BLOQUEADA", aprovacao.stderr)
 
 
+class RodadaTest(GuardBase):
+    """Task 9: a chave de um gate passa a ser (checkpoint, pbi, rodada) —
+    reprovar um PBI não pode mais colidir com "gate decidido é imutável"
+    quando o rework precisa reabrir o MESMO (checkpoint, pbi). A rodada
+    seguinte só é legítima sob duas amarras: (1) é sempre
+    max(rodada existente da série) + 1 — nunca pulada, nunca repetida — e
+    (2) só existe se a rodada anterior daquela mesma série estiver
+    REGISTRADA como 'reprovado' (não 'aprovado', não ainda 'aguardando-po').
+    Rodada ausente no JSON é tratada como 1, para não quebrar gates antigos
+    gravados antes deste fix.
+    """
+
+    def _escreve_gate(self, content):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/gate.json", "content": content},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_rodada_seguinte_apos_reprovacao_registrada_e_permitida(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rodada_seguinte_apos_aprovado_e_bloqueada(self):
+        # A rodada anterior foi APROVADA, não reprovada: nada legitima uma
+        # rodada seguinte — o PBI já passou, não está "brigando".
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+
+    def test_rodada_seguinte_com_anterior_ainda_aguardando_po_e_bloqueada(self):
+        # A rodada anterior ainda não foi decidida: abrir a "próxima" agora
+        # seria reabrir um gate pendente por outro caminho.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+
+    def test_pular_direto_para_rodada_3_e_bloqueado(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 3,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+
+    def test_repetir_rodada_existente_e_bloqueado(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+
+    def test_rodada_seguinte_com_opened_at_seq_antedatado_e_bloqueada(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 3},
+        ]))
+        self.assertEqual(r.returncode, 2)
+
+    def test_gate_sem_campo_rodada_e_tratado_como_rodada_1(self):
+        # Estado legado, gravado antes deste fix: sem "rodada" no JSON.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03",
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03",
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_primeira_rodada_sem_historico_continua_permitida(self):
+        # Não-regressão: abrir a rodada 1 (ou nem declarar "rodada") de uma
+        # chave nunca vista continua funcionando como antes deste fix.
+        self.state("seq", "0")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "07",
+             "status": "aguardando-po", "opened_at_seq": 1},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rodada_string_numerica_e_aceita_como_equivalente_ao_inteiro(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+        ]))
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 1,
+             "status": "reprovado", "opened_at_seq": 5},
+            {"checkpoint": "testes", "pbi": "03", "rodada": "2",
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rodada_string_nao_numerica_bloqueia_sem_traceback(self):
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": "abc",
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_rodada_float_bloqueia_sem_traceback(self):
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": 2.5,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_rodada_negativa_bloqueia_sem_traceback(self):
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": -1,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_rodada_tipo_lista_bloqueia_sem_traceback(self):
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": [1, 2],
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_rodada_booleana_bloqueia_sem_traceback(self):
+        self.state("seq", "10")
+        r = self._escreve_gate(json.dumps([
+            {"checkpoint": "testes", "pbi": "03", "rodada": True,
+             "status": "aguardando-po", "opened_at_seq": 10},
+        ]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+
 class MainFailOpenPayloadTest(GuardBase):
     """Brecha 1 (Critical, fail-open): main() fazia o parsing do payload e
     chamava load_config(cwd) FORA do try/except que garante fail-open. Só
