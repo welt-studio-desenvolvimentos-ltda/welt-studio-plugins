@@ -118,7 +118,22 @@ Deixe aberto num segundo monitor e você acompanha o lote inteiro sem tocar no t
 
 > Adicione `.specgate-dashboard.html` ao `.gitignore` junto com `.specgate/`.
 
-**No VS Code**, a mesma coisa num painel dockável ao lado do editor, sem servidor: a extensão em [`vscode-spec-gate-board/`](../../vscode-spec-gate-board/).
+### 🧩 O mesmo board dentro do VS Code
+
+Um painel dockável ao lado do editor, sem servidor e sem polling — ele vigia o arquivo de estado e atualiza na hora.
+
+Isto é uma **extensão do VS Code, não parte do plugin**: os arquivos vêm junto quando você adiciona o marketplace, mas instalar é um passo à parte.
+
+```bash
+npm install -g @vscode/vsce
+cd ~/.claude/plugins/marketplaces/welt-studio-plugins/vscode-spec-gate-board
+vsce package
+code --install-extension spec-gate-board-0.1.0.vsix
+```
+
+Depois é automático: sempre que o projeto aberto tiver `.specgate.json`, o painel abre sozinho. Para chamar à mão, `Ctrl+Shift+P` → *"spec-gate: Show Board"*.
+
+> A API de plugins do Claude Code não tem superfície de UI — por isso janela fixa só existe por fora, como extensão.
 
 ### No terminal
 
