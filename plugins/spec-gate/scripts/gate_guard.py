@@ -20,6 +20,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 
 try:
     # O import roda antes de sabermos se o projeto usa spec-gate, e este é um
@@ -274,6 +275,26 @@ def current_branch(cwd):
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+TAIL_STDOUT_CHARS = 2000
+TAIL_STDERR_CHARS = 1000
+
+
+def _tail_arquivo(fh, n):
+    """Últimos `n` bytes de um arquivo binário aberto para leitura e
+    escrita (um `tempfile.TemporaryFile`), lidos via `seek` — nunca o
+    conteúdo inteiro. É metade da correção do C2: antes, `capture_output=
+    True` bufferizava a saída COMPLETA do test_command em memória, embora
+    só este rabo seja usado nas mensagens de bloqueio; sob teto de memória
+    (container limitado, suíte verbosa), bufferizar a saída inteira podia
+    levantar MemoryError sozinho, sem nenhum adversário envolvido.
+    """
+    fh.flush()
+    fh.seek(0, os.SEEK_END)
+    tamanho = fh.tell()
+    fh.seek(max(0, tamanho - n))
+    return fh.read().decode("utf-8", errors="replace")
+
+
 def guard_regression(tool_input, cwd, cfg):
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or not COMMIT_RE.search(cmd):
@@ -297,26 +318,59 @@ def guard_regression(tool_input, cwd, cfg):
     if not MERGE_RE.search(cmd) and current_branch(cwd).startswith("parked/"):
         return
     timeout = int(cfg.get("test_timeout_seconds", 600))
+
+    # A REGRA (fixada pelo dono do produto, C2): fail-open vale para erro de
+    # PARSING de estado (gate.json malformado, batch.json corrompido — ver
+    # os wrappers `_*_seguro` acima) porque ali há um ARQUIVO para
+    # interpretar e um default seguro óbvio. Aqui não há nada para
+    # parsear: há uma verificação que precisa RODAR. "Não consegui
+    # verificar" não é o mesmo veredito que "verifiquei e está tudo bem", e
+    # só o segundo libera o commit — por isso qualquer falha em EXECUTAR o
+    # test_command (estouro de memória, fork falhando, disco cheio) vira
+    # BLOQUEIO, nunca liberação. `block()` levanta SystemExit, que o
+    # `except SystemExit: raise` de main() reergue sem engolir — é esse
+    # reerguimento, e não um `except Exception` mais permissivo aqui
+    # embaixo, que impede o bug relatado (MemoryError escapando até o
+    # `except Exception: sys.exit(0)` de main() e liberando o commit com a
+    # suíte vermelha).
+    #
+    # A saída do processo vai para arquivos temporários binários (não
+    # `capture_output=True`, que bufferiza TUDO em RAM) e só o rabo
+    # (TAIL_STDOUT_CHARS/TAIL_STDERR_CHARS) é lido de volta via `seek` — o
+    # uso real nunca foi mais que isso.
     try:
-        proc = subprocess.run(
-            test_command, shell=True, cwd=cwd, capture_output=True,
-            text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+        with tempfile.TemporaryFile() as out_fh, tempfile.TemporaryFile() as err_fh:
+            try:
+                proc = subprocess.run(
+                    test_command, shell=True, cwd=cwd,
+                    stdout=out_fh, stderr=err_fh, timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                block(
+                    "[spec-gate] Gate de regressão: a suíte de testes excedeu o tempo "
+                    f"limite de {timeout}s. Commit bloqueado. Investigue antes de commitar."
+                )
+                return
+            if proc.returncode != 0:
+                tail_out = _tail_arquivo(out_fh, TAIL_STDOUT_CHARS)
+                tail_err = _tail_arquivo(err_fh, TAIL_STDERR_CHARS)
+                block(
+                    "[spec-gate] Gate de regressão FALHOU. Commit/merge bloqueado até a "
+                    f"suíte completa passar.\nComando: {test_command}\n"
+                    f"--- saída (final) ---\n{tail_out}\n{tail_err}\n"
+                    "Corrija as falhas ou, se estiver travado após várias tentativas, "
+                    "pare e reporte ao usuário em vez de insistir."
+                )
+    except SystemExit:
+        raise
+    except (MemoryError, OSError) as exc:
         block(
-            "[spec-gate] Gate de regressão: a suíte de testes excedeu o tempo "
-            f"limite de {timeout}s. Commit bloqueado. Investigue antes de commitar."
-        )
-        return
-    if proc.returncode != 0:
-        tail_out = (proc.stdout or "")[-2000:]
-        tail_err = (proc.stderr or "")[-1000:]
-        block(
-            "[spec-gate] Gate de regressão FALHOU. Commit/merge bloqueado até a "
-            f"suíte completa passar.\nComando: {test_command}\n"
-            f"--- saída (final) ---\n{tail_out}\n{tail_err}\n"
-            "Corrija as falhas ou, se estiver travado após várias tentativas, "
-            "pare e reporte ao usuário em vez de insistir."
+            "[spec-gate] Gate de regressão: a suíte de testes NÃO PÔDE SER "
+            f"EXECUTADA/AVALIADA ({exc.__class__.__name__}: {exc}). Commit "
+            "bloqueado — não conseguir verificar não é o mesmo que verificar e "
+            "estar tudo bem. Investigue o ambiente de execução (memória, disco, "
+            "processo) antes de tentar de novo; este bloqueio não é por suíte "
+            "vermelha, é por não ter sido possível rodá-la."
         )
 
 

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -5,9 +7,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 sys.path.insert(0, SCRIPTS)
+
+import gate_guard
 
 GUARD = os.path.join(SCRIPTS, "gate_guard.py")
 
@@ -1168,6 +1173,200 @@ class ParkedBranchDeteccaoFalhaTest(GuardBase):
         r = self.bash("git commit -m wip")
         self.assertEqual(r.returncode, 2)
         self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+
+class GuardRegressionNaoRegressaoTest(GuardBase):
+    """C2: a correção (redirecionar a saída do test_command para arquivo
+    temporário em vez de bufferizar em RAM, e bloquear em falha de
+    execução) não pode mudar nenhum destes comportamentos já existentes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, cwd=self.tmp, capture_output=True)
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init", "--no-verify"],
+                       cwd=self.tmp, capture_output=True)
+
+    def _stage_change(self, name="b.txt"):
+        with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+
+    def test_dry_run_nao_roda_a_suite(self):
+        self.config({"test_command": "false"})  # se rodasse, bloquearia
+        self._stage_change()
+        r = self.bash("git commit --dry-run -m wip")
+        self.assertEqual(r.returncode, 0)
+
+    def test_suite_verde_passa(self):
+        self.config({"test_command": "true"})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 0)
+
+    def test_suite_vermelha_bloqueia(self):
+        self.config({"test_command": "false"})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+    def test_timeout_ainda_bloqueia(self):
+        self.config({"test_command": "sleep 2", "test_timeout_seconds": 1})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("excedeu o tempo", r.stderr)
+
+    def test_parked_ainda_isenta_commit_da_suite(self):
+        subprocess.run(["git", "checkout", "-q", "-b", "parked/09-x"], cwd=self.tmp, capture_output=True)
+        self.config({"test_command": "false"})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 0)
+
+    def test_merge_ainda_roda_o_gate_mesmo_partindo_de_parked(self):
+        subprocess.run(["git", "checkout", "-q", "-b", "parked/09-x"], cwd=self.tmp, capture_output=True)
+        self._stage_change()
+        subprocess.run(["git", "commit", "-q", "-m", "wip", "--no-verify"],
+                       cwd=self.tmp, capture_output=True)
+        self.config({"test_command": "false"})
+        r = self.bash("git checkout main && git merge parked/09-x")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+
+
+class GuardRegressionSaidaGiganteTest(GuardBase):
+    """C2 — o achado: `guard_regression` usava `capture_output=True`, que
+    bufferiza a saída INTEIRA do test_command em RAM, embora só o rabo
+    (2000/1000 chars) seja usado nas mensagens. Sob teto de memória
+    (container limitado, suíte verbosa), isso podia levantar MemoryError
+    sozinho — e esse erro, sem tratamento dedicado, era engolido pelo
+    `except Exception: sys.exit(0)` de main(), liberando o commit com a
+    suíte VERMELHA.
+
+    Não é portável forçar um teto de memória do SO num teste unitário, mas
+    dá para prová-lo pelo comportamento observável: uma saída GRANDE de
+    verdade (~5 MB) não pode travar nem, pior, contornar o bloqueio — que é
+    exatamente o que a correção (redirecionar para arquivo temporário, ler
+    só o rabo com seek) precisa preservar.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, cwd=self.tmp, capture_output=True)
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init", "--no-verify"],
+                       cwd=self.tmp, capture_output=True)
+
+    def _stage_change(self, name="b.txt"):
+        with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+
+    def test_saida_gigante_com_suite_vermelha_ainda_bloqueia(self):
+        self.config({"test_command": (
+            "python3 -c \"import sys; sys.stdout.write('a' * 5_000_000); "
+            "sys.exit(1)\""
+        )})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Gate de regressão FALHOU", r.stderr)
+        # A mensagem de bloqueio traz só o RABO, nunca a saída inteira de 5 MB.
+        self.assertLess(len(r.stderr), 10_000)
+
+    def test_saida_gigante_com_suite_verde_passa(self):
+        self.config({"test_command": (
+            "python3 -c \"import sys; sys.stdout.write('a' * 5_000_000); "
+            "sys.exit(0)\""
+        )})
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 0)
+
+
+class GuardRegressionFalhaDeRecursoTest(GuardBase):
+    """C2 — a regra do PO, registrada aqui em teste: fail-open vale para
+    erro de PARSING de estado, nunca para falha em EXECUTAR a verificação.
+    Se o test_command não pôde ser rodado/avaliado (MemoryError, OSError —
+    estouro de recurso, fork falhando, disco cheio), o commit precisa
+    BLOQUEAR: não conseguir verificar não é o mesmo que verificar e estar
+    tudo bem.
+
+    Chama `gate_guard.guard_regression` diretamente, em processo, com
+    `subprocess.run` mockado — forçar um MemoryError de verdade via limite
+    de memória do SO não é portável num teste unitário.
+    """
+
+    def _fake_run_falha_no_test_command(self, exc):
+        def fake(cmd, **kwargs):
+            if isinstance(cmd, list):
+                # Esta é a chamada de current_branch() (`git branch
+                # --show-current`, lista) — deixa falhar "normal" (fail-safe
+                # na direção certa, current_branch já cobre isso) para não
+                # confundir com a falha do test_command em si, que é o
+                # alvo deste teste (test_command é sempre uma string, por
+                # rodar com shell=True).
+                raise OSError("git indisponível neste teste")
+            raise exc
+        return fake
+
+    def test_memory_error_ao_executar_test_command_bloqueia(self):
+        cfg = {"test_command": "true"}
+        tool_input = {"command": "git commit -m x"}
+        with mock.patch.object(
+            gate_guard.subprocess, "run",
+            side_effect=self._fake_run_falha_no_test_command(MemoryError("boom")),
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as cm:
+                    gate_guard.guard_regression(tool_input, self.tmp, cfg)
+            self.assertEqual(cm.exception.code, 2)
+        self.assertIn("NÃO PÔDE SER EXECUTADA", stderr.getvalue())
+
+    def test_oserror_ao_executar_test_command_bloqueia(self):
+        cfg = {"test_command": "true"}
+        tool_input = {"command": "git commit -m x"}
+        with mock.patch.object(
+            gate_guard.subprocess, "run",
+            side_effect=self._fake_run_falha_no_test_command(
+                OSError("Cannot allocate memory")
+            ),
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as cm:
+                    gate_guard.guard_regression(tool_input, self.tmp, cfg)
+            self.assertEqual(cm.exception.code, 2)
+        self.assertIn("NÃO PÔDE SER EXECUTADA", stderr.getvalue())
+
+    def test_falha_de_recurso_nao_e_engolida_por_main(self):
+        # Ponta a ponta: main() precisa deixar o SystemExit(2) escapar do
+        # seu próprio `except Exception: sys.exit(0)` — é exatamente esse
+        # engolimento que causava o bug relatado (bypass silencioso).
+        self.config({"test_command": "true"})
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m x"},
+            "cwd": self.tmp,
+        }
+        with mock.patch.object(
+            gate_guard.subprocess, "run",
+            side_effect=self._fake_run_falha_no_test_command(MemoryError("boom")),
+        ):
+            with mock.patch.object(
+                gate_guard.sys, "stdin", io.StringIO(json.dumps(payload))
+            ):
+                with self.assertRaises(SystemExit) as cm:
+                    gate_guard.main()
+        self.assertEqual(cm.exception.code, 2)
 
 
 class SeqLockTest(GuardBase):
