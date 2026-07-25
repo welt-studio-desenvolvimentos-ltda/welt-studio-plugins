@@ -5,7 +5,7 @@ Plugin de Claude Code que destila as ideias de governança que valem a pena do p
 1. **Testes black-box**: um subagent escreve os testes lendo apenas a spec do PBI (`docs/backlog/NN-nome.md`). Um hook bloqueia mecanicamente a leitura do código-fonte durante essa fase, então os testes não conseguem espelhar a implementação.
 2. **Término mecânico**: "pronto" só existe quando a suíte completa roda de verdade e passa, com teto de tentativas de correção. Um hook roda a suíte inteira em todo `git commit` e `git merge` e bloqueia se algo falhar.
 3. **Escalação obrigatória**: requisito ambíguo vira pergunta ao PO, nunca código em cima de palpite. O testador devolve as ambiguidades da spec como perguntas, e o fluxo estaciona o PBI até serem respondidas.
-4. **Decisão de PO não se toma sozinho**: quatro gates mecânicos (backlog, testes, aceite, ambiguidade) param o fluxo inteiro e bloqueiam por hook qualquer tentativa de registrar uma decisão sem uma fala real do PO depois que o gate abriu.
+4. **Decisão de PO não se toma sozinho**: quatro gates de PO (backlog, testes, aceite, ambiguidade) param o fluxo inteiro e bloqueiam por hook qualquer tentativa de registrar uma decisão sem uma fala real do PO depois que o gate abriu.
 
 ## Instalação
 
