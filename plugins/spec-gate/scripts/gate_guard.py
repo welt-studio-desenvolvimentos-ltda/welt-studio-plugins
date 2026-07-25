@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -480,12 +481,29 @@ def guard_regression(tool_input, cwd, cfg):
     # uso real nunca foi mais que isso.
     try:
         with tempfile.TemporaryFile() as out_fh, tempfile.TemporaryFile() as err_fh:
+            # I6 (achado da revisão final): `start_new_session=True` faz de
+            # proc.pid o líder de um GRUPO DE PROCESSOS novo. Sem isto (o bug
+            # relatado), subprocess.run(timeout=...) mata só o processo do
+            # /bin/sh no TimeoutExpired — um filho que o test_command tenha
+            # backgroundeado (ou a própria suíte travada, se ela por sua vez
+            # tiver filhos) sobrevive como ÓRFÃO, continua rodando e consome
+            # recursos indefinidamente; tentativas repetidas de commit
+            # empilhavam cópias da suíte travada.
+            proc = subprocess.Popen(
+                test_command, shell=True, cwd=cwd,
+                stdout=out_fh, stderr=err_fh, start_new_session=True,
+            )
             try:
-                proc = subprocess.run(
-                    test_command, shell=True, cwd=cwd,
-                    stdout=out_fh, stderr=err_fh, timeout=timeout,
-                )
+                proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                # Mata o GRUPO INTEIRO (não só proc.pid) — killpg alcança
+                # qualquer processo que o test_command tenha backgroundeado
+                # dentro do mesmo grupo, não só o shell direto.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # já morreu sozinho entre o timeout estourar e aqui
+                proc.wait()  # reaproveita o processo (evita zumbi); já está morto, não bloqueia
                 block(
                     "[spec-gate] Gate de regressão: a suíte de testes excedeu o tempo "
                     f"limite de {timeout}s. Commit bloqueado. Investigue antes de commitar."

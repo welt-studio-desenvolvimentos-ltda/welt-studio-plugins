@@ -1240,6 +1240,72 @@ class GuardRegressionNaoRegressaoTest(GuardBase):
         self.assertIn("Gate de regressão FALHOU", r.stderr)
 
 
+class GuardRegressionTimeoutOrfaoTest(GuardBase):
+    """I6 (achado da revisão final): guard_regression rodava
+    subprocess.run(test_command, shell=True, timeout=...) sem
+    start_new_session=True. No TimeoutExpired, a stdlib mata só o processo
+    do /bin/sh — um filho desse shell (a suíte de verdade travada, ou
+    qualquer processo que ele tenha backgroundeado) não é atingido e
+    continua rodando, órfão, consumindo recursos indefinidamente. Tentativas
+    repetidas de commit empilhavam cópias da suíte travada.
+    """
+
+    MARCADOR = "spec-gate-i6-heartbeat-marker"
+
+    def setUp(self):
+        super().setUp()
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, cwd=self.tmp, capture_output=True)
+        open(os.path.join(self.tmp, "a.txt"), "w").close()
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init", "--no-verify"],
+                       cwd=self.tmp, capture_output=True)
+
+    def tearDown(self):
+        # Limpeza best-effort: mesmo que o fix falhe (ou o teste seja
+        # interrompido no meio), não deixar o loop de heartbeat rodando de
+        # verdade na máquina depois que o teste termina.
+        subprocess.run(["pkill", "-f", self.MARCADOR], capture_output=True)
+        super().tearDown()
+
+    def _stage_change(self, name="b.txt"):
+        with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        subprocess.run(["git", "add", "."], cwd=self.tmp, capture_output=True)
+
+    def test_timeout_mata_processo_filho_do_shell_nao_so_o_shell(self):
+        # O `: marcador` embutido no comando é um no-op (builtin `:` do
+        # shell) — só serve para o cmdline dos processos filhos (que
+        # herdam o mesmo argv do shell, sem re-exec) conter uma string
+        # única que o tearDown usa para limpar via `pkill -f`.
+        heartbeat = os.path.join(self.tmp, "heartbeat.txt")
+        self.config({
+            "test_command": (
+                f": {self.MARCADOR}; while true; do echo x >> heartbeat.txt; "
+                "sleep 0.05; done & sleep 3600"
+            ),
+            "test_timeout_seconds": 1,
+        })
+        self._stage_change()
+        r = self.bash("git commit -m wip")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("excedeu o tempo", r.stderr)
+
+        # Se o processo em background sobreviveu ao timeout (o bug: só o
+        # /bin/sh era morto), heartbeat.txt continua CRESCENDO depois que o
+        # guard já retornou. Se foi morto de verdade (grupo inteiro), o
+        # tamanho do arquivo para de mudar.
+        self.assertTrue(os.path.exists(heartbeat), "a suíte nem chegou a rodar")
+        tamanho_logo_apos = os.path.getsize(heartbeat)
+        time.sleep(0.5)
+        tamanho_depois = os.path.getsize(heartbeat)
+        self.assertEqual(
+            tamanho_logo_apos, tamanho_depois,
+            msg="processo em background continuou escrevendo após o timeout "
+                "— ficou órfão em vez de morto junto com o shell",
+        )
+
+
 class GuardRegressionSaidaGiganteTest(GuardBase):
     """C2 — o achado: `guard_regression` usava `capture_output=True`, que
     bufferiza a saída INTEIRA do test_command em RAM, embora só o rabo
@@ -1301,15 +1367,20 @@ class GuardRegressionFalhaDeRecursoTest(GuardBase):
     tudo bem.
 
     Chama `gate_guard.guard_regression` diretamente, em processo, com
-    `subprocess.run` mockado — forçar um MemoryError de verdade via limite
-    de memória do SO não é portável num teste unitário.
+    `subprocess.Popen` mockado (I6: guard_regression passou a usar Popen +
+    start_new_session=True em vez de subprocess.run, para poder matar o
+    GRUPO de processos inteiro no timeout, não só o /bin/sh) — forçar um
+    MemoryError de verdade via limite de memória do SO não é portável num
+    teste unitário.
     """
 
-    def _fake_run_falha_no_test_command(self, exc):
+    def _fake_popen_falha_no_test_command(self, exc):
         def fake(cmd, **kwargs):
             if isinstance(cmd, list):
-                # Esta é a chamada de current_branch() (`git branch
-                # --show-current`, lista) — deixa falhar "normal" (fail-safe
+                # subprocess.run (usado por current_branch(), chamada de
+                # `git branch --show-current`) invoca Popen por baixo dos
+                # panos — mockar Popen intercepta as DUAS chamadas. Esta é
+                # a de current_branch(): deixa falhar "normal" (fail-safe
                 # na direção certa, current_branch já cobre isso) para não
                 # confundir com a falha do test_command em si, que é o
                 # alvo deste teste (test_command é sempre uma string, por
@@ -1322,8 +1393,8 @@ class GuardRegressionFalhaDeRecursoTest(GuardBase):
         cfg = {"test_command": "true"}
         tool_input = {"command": "git commit -m x"}
         with mock.patch.object(
-            gate_guard.subprocess, "run",
-            side_effect=self._fake_run_falha_no_test_command(MemoryError("boom")),
+            gate_guard.subprocess, "Popen",
+            side_effect=self._fake_popen_falha_no_test_command(MemoryError("boom")),
         ):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -1336,8 +1407,8 @@ class GuardRegressionFalhaDeRecursoTest(GuardBase):
         cfg = {"test_command": "true"}
         tool_input = {"command": "git commit -m x"}
         with mock.patch.object(
-            gate_guard.subprocess, "run",
-            side_effect=self._fake_run_falha_no_test_command(
+            gate_guard.subprocess, "Popen",
+            side_effect=self._fake_popen_falha_no_test_command(
                 OSError("Cannot allocate memory")
             ),
         ):
@@ -1359,8 +1430,8 @@ class GuardRegressionFalhaDeRecursoTest(GuardBase):
             "cwd": self.tmp,
         }
         with mock.patch.object(
-            gate_guard.subprocess, "run",
-            side_effect=self._fake_run_falha_no_test_command(MemoryError("boom")),
+            gate_guard.subprocess, "Popen",
+            side_effect=self._fake_popen_falha_no_test_command(MemoryError("boom")),
         ):
             with mock.patch.object(
                 gate_guard.sys, "stdin", io.StringIO(json.dumps(payload))
