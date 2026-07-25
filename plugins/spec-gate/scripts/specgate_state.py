@@ -67,7 +67,7 @@ def read_gates(cwd):
     return [g for g in data if isinstance(g, dict)]
 
 
-def _rodada(g):
+def _round_number(g):
     """Número da rodada de um gate, como int >= 1. Nunca levanta: valor
     ausente ou malformado (string não numérica, float, negativo, tipos
     mistos) vira 1 — o mesmo default de compatibilidade usado por
@@ -86,7 +86,7 @@ def _rodada(g):
     return n if n >= 1 else 1
 
 
-def gates_vigentes(cwd):
+def current_gates(cwd):
     """Um gate por (checkpoint, pbi): sempre o de MAIOR rodada.
 
     Uma vez que a chave de um gate passou a incluir a rodada (Task 9),
@@ -96,12 +96,12 @@ def gates_vigentes(cwd):
     consumidor de "qual é o gate deste PBI agora" deve olhar uma rodada
     antiga: ela já foi decidida e não representa mais nada pendente.
     """
-    melhor = {}
+    best = {}
     for g in read_gates(cwd):
-        chave = (g.get("checkpoint"), g.get("pbi"))
-        if chave not in melhor or _rodada(g) > _rodada(melhor[chave]):
-            melhor[chave] = g
-    return list(melhor.values())
+        key = (g.get("checkpoint"), g.get("pbi"))
+        if key not in best or _round_number(g) > _round_number(best[key]):
+            best[key] = g
+    return list(best.values())
 
 
 def open_gates(cwd):
@@ -109,7 +109,7 @@ def open_gates(cwd):
     cada (checkpoint, pbi). Uma rodada anterior já decidida nunca conta
     como pendente, mesmo que apareça em disco com o status antigo.
     """
-    return [g for g in gates_vigentes(cwd) if g.get("status") == "aguardando-po"]
+    return [g for g in current_gates(cwd) if g.get("status") == "aguardando-po"]
 
 
 def has_human_turn_since(cwd, opened_at_seq):

@@ -95,7 +95,7 @@ class StateTest(unittest.TestCase):
             {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "reprovado"},
             {"checkpoint": "testes", "pbi": "03", "rodada": 3, "status": "aguardando-po"},
         ]))
-        vigentes = st.gates_vigentes(self.tmp)
+        vigentes = st.current_gates(self.tmp)
         self.assertEqual(len(vigentes), 1)
         self.assertEqual(vigentes[0]["rodada"], 3)
 
@@ -114,7 +114,7 @@ class StateTest(unittest.TestCase):
             {"checkpoint": "testes", "pbi": "03", "status": "reprovado"},
             {"checkpoint": "testes", "pbi": "03", "rodada": 2, "status": "aguardando-po"},
         ]))
-        vigentes = st.gates_vigentes(self.tmp)
+        vigentes = st.current_gates(self.tmp)
         self.assertEqual(len(vigentes), 1)
         self.assertEqual(vigentes[0]["rodada"], 2)
 

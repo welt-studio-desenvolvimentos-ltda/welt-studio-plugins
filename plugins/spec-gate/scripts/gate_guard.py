@@ -146,10 +146,10 @@ BATCH_REL = os.path.join(".specgate", "batch.json")
 # /spec-gate) e não no outro (aqui), e a chave congelava para sempre depois
 # da primeira ambiguidade respondida. 'aprovado' fica de fora de propósito:
 # um PBI aprovado não está "brigando", não há o que legitimar de novo.
-STATUS_QUE_LEGITIMAM_RODADA = ("reprovado", "respondido")
+STATUSES_THAT_LEGITIMIZE_ROUND = ("reprovado", "respondido")
 
 
-def _janela_retomada_spec_aberta(cwd, candidate):
+def _spec_resume_window_open(cwd, candidate):
     """C1: a única exceção ao congelamento de docs/backlog/ — a janela de
     escrita que fecha o ciclo de estacionamento.
 
@@ -203,7 +203,7 @@ def _janela_retomada_spec_aberta(cwd, candidate):
         return False
     if current_phase(cwd) != "":
         return False
-    for g in _gates_vigentes_seguro(cwd):
+    for g in _safe_current_gates(cwd):
         if g.get("checkpoint") != "ambiguidade" or g.get("status") != "respondido":
             continue
         pbi = g.get("pbi")
@@ -211,7 +211,7 @@ def _janela_retomada_spec_aberta(cwd, candidate):
             continue
         if not _same_file(candidate, cwd, pbi):
             continue
-        if _has_human_turn_seguro(cwd, g.get("opened_at_seq", 0)):
+        if _safe_has_human_turn(cwd, g.get("opened_at_seq", 0)):
             return True
     return False
 
@@ -245,7 +245,7 @@ def guard_spec_lock(tool, tool_input, cwd, cfg):
     for t in write_targets(tool, tool_input):
         if not touches_source(t, cwd, spec_dirs):
             continue
-        if _janela_retomada_spec_aberta(cwd, t):
+        if _spec_resume_window_open(cwd, t):
             continue
         block(reason.format(alvo=t))
 
@@ -337,7 +337,7 @@ def guard_testing_phase(tool, tool_input, cwd, cfg):
         # fricção desproporcional ao risco, e reintroduziria a regressão de
         # latência que este fix corrige (o parsing abaixo é o mesmo custo
         # por token que os guards de estado tinham).
-        if len(cmd) > BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL:
+        if len(cmd) > BASH_CMD_MAX_VERIFIABLE_SIZE:
             return
         try:
             tokens = shlex.split(cmd, posix=True)
@@ -420,7 +420,7 @@ TAIL_STDOUT_CHARS = 2000
 TAIL_STDERR_CHARS = 1000
 
 
-def _tail_arquivo(fh, n):
+def _tail_file(fh, n):
     """Últimos `n` bytes de um arquivo binário aberto para leitura e
     escrita (um `tempfile.TemporaryFile`), lidos via `seek` — nunca o
     conteúdo inteiro. É metade da correção do C2: antes, `capture_output=
@@ -431,8 +431,8 @@ def _tail_arquivo(fh, n):
     """
     fh.flush()
     fh.seek(0, os.SEEK_END)
-    tamanho = fh.tell()
-    fh.seek(max(0, tamanho - n))
+    size = fh.tell()
+    fh.seek(max(0, size - n))
     return fh.read().decode("utf-8", errors="replace")
 
 
@@ -510,8 +510,8 @@ def guard_regression(tool_input, cwd, cfg):
                 )
                 return
             if proc.returncode != 0:
-                tail_out = _tail_arquivo(out_fh, TAIL_STDOUT_CHARS)
-                tail_err = _tail_arquivo(err_fh, TAIL_STDERR_CHARS)
+                tail_out = _tail_file(out_fh, TAIL_STDOUT_CHARS)
+                tail_err = _tail_file(err_fh, TAIL_STDERR_CHARS)
                 block(
                     "[spec-gate] Gate de regressão FALHOU. Commit/merge bloqueado até a "
                     f"suíte completa passar.\nComando: {test_command}\n"
@@ -742,7 +742,7 @@ def _same_file(candidate, cwd, rel):
 # refazia esse trabalho para o MESMO comando). Acima do limite o comando é
 # tratado como NÃO VERIFICÁVEL — ver `_bloqueia_se_grande_demais` para o
 # lado seguro escolhido.
-BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL = 64 * 1024
+BASH_CMD_MAX_VERIFIABLE_SIZE = 64 * 1024
 
 
 @functools.lru_cache(maxsize=16)
@@ -760,7 +760,7 @@ def _resolved_bash_targets(cmd, cwd):
     )
 
 
-def _toca_arquivo_de_estado(tool, tool_input, cwd, rel):
+def _touches_state_file(tool, tool_input, cwd, rel):
     """True/False se dá para verificar se esta chamada escreve em `rel` (um
     dos 4 arquivos de estado: phase, gate.json, seq, batch.json); None se o
     comando Bash é grande demais para valer a pena parsear (ver
@@ -770,7 +770,7 @@ def _toca_arquivo_de_estado(tool, tool_input, cwd, rel):
         cmd = tool_input.get("command", "")
         if not isinstance(cmd, str) or not cmd:
             return False
-        if len(cmd) > BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL:
+        if len(cmd) > BASH_CMD_MAX_VERIFIABLE_SIZE:
             return None
         alvo = os.path.realpath(os.path.join(cwd, rel))
         return alvo in _resolved_bash_targets(cmd, cwd)
@@ -780,7 +780,7 @@ def _toca_arquivo_de_estado(tool, tool_input, cwd, rel):
     return False
 
 
-def _bloqueia_se_grande_demais(cwd, nome_arquivo):
+def _block_if_too_large(cwd, file_name):
     """Chamado por `guard_po_gate` e `guard_gate_clear` quando
     `_toca_arquivo_de_estado` devolve None (comando grande demais para
     parsear com segurança, I5).
@@ -804,21 +804,21 @@ def _bloqueia_se_grande_demais(cwd, nome_arquivo):
     grande é, de longe, mais provável de ser um heredoc legítimo do que uma
     tentativa de burlar o guard por meio dele).
     """
-    if not _open_gates_seguro(cwd):
+    if not _safe_open_gates(cwd):
         return
     block(
-        f"[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO ({nome_arquivo}). "
+        f"[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO ({file_name}). "
         "Este comando Bash passa de 64KB, tamanho acima do qual o guard não "
         "reparseia o comando inteiro por token (é a regressão de latência "
         "que este fix corrige) — então não há como confirmar que ele não "
-        f"escreve em {nome_arquivo}, e existe gate aberto aguardando o PO "
+        f"escreve em {file_name}, e existe gate aberto aguardando o PO "
         "agora. Não conseguir verificar não é o mesmo que verificar e estar "
         "tudo bem: quebre a operação em comandos menores, ou escreva por um "
         "caminho que não precise de um comando Bash gigante."
     )
 
 
-def _bloqueia_seq_grande_demais(cwd, tool_input):
+def _block_seq_if_too_large(cwd, tool_input):
     """Fallback de `guard_seq_lock` quando o comando Bash é grande demais
     para reparsear por token (I5, ver BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL).
 
@@ -861,7 +861,7 @@ def _bloqueia_seq_grande_demais(cwd, tool_input):
     )
 
 
-def _bloqueia_batch_grande_demais(cwd, tool_input):
+def _block_batch_if_too_large(cwd, tool_input):
     """Fallback de `guard_batch_lock` quando o comando Bash é grande demais
     para reparsear por token (I5).
 
@@ -888,7 +888,7 @@ def _bloqueia_batch_grande_demais(cwd, tool_input):
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or BATCH_REL not in cmd:
         return
-    if not _gate_po_1_passed_seguro(cwd):
+    if not _safe_gate_po_1_passed(cwd):
         return  # congelamento ainda não ligou: nada aqui para proteger
     block(
         "[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO (.specgate/batch.json). "
@@ -903,7 +903,7 @@ def _bloqueia_batch_grande_demais(cwd, tool_input):
     )
 
 
-def _open_gates_seguro(cwd):
+def _safe_open_gates(cwd):
     """Wrapper fail-open sobre specgate_state.open_gates.
 
     Protege o ponto de USO, não só o import do topo: com o módulo ausente
@@ -920,7 +920,7 @@ def _open_gates_seguro(cwd):
         return []
 
 
-def _read_gates_seguro(cwd):
+def _safe_read_gates(cwd):
     """Wrapper fail-open sobre specgate_state.read_gates.
 
     Mesmo raciocínio de `_open_gates_seguro`: usado para saber se uma chave
@@ -937,7 +937,7 @@ def _read_gates_seguro(cwd):
         return []
 
 
-def _gates_vigentes_seguro(cwd):
+def _safe_current_gates(cwd):
     """Wrapper fail-open sobre specgate_state.gates_vigentes.
 
     Mesmo raciocínio de `_open_gates_seguro`: módulo ausente ou quebrado ->
@@ -949,12 +949,12 @@ def _gates_vigentes_seguro(cwd):
     if specgate_state is None:
         return []
     try:
-        return specgate_state.gates_vigentes(cwd)
+        return specgate_state.current_gates(cwd)
     except Exception:
         return []
 
 
-def _gate_po_1_passed_seguro(cwd):
+def _safe_gate_po_1_passed(cwd):
     """Wrapper fail-open sobre specgate_state.gate_po_1_passed.
 
     Mesmo raciocínio de `_open_gates_seguro`/`_has_human_turn_seguro`:
@@ -990,11 +990,11 @@ def guard_seq_lock(tool, tool_input, cwd):
     dd/install/interpretador inline ou heredoc) — forjaria essa prova de
     turno, por isso é bloqueada aqui, independente de haver gate aberto.
     """
-    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, SEQ_REL)
-    if toca is None:
-        _bloqueia_seq_grande_demais(cwd, tool_input)
+    touches = _touches_state_file(tool, tool_input, cwd, SEQ_REL)
+    if touches is None:
+        _block_seq_if_too_large(cwd, tool_input)
         return
-    if not toca:
+    if not touches:
         return
     block(
         "[spec-gate] ESCRITA EM .specgate/seq BLOQUEADA. Este contador de "
@@ -1051,16 +1051,16 @@ def guard_batch_lock(tool, tool_input, cwd):
     o resultado final não há como confirmar que backlog_aprovado continua
     true, então bloqueia.
     """
-    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, BATCH_REL)
-    if toca is None:
-        _bloqueia_batch_grande_demais(cwd, tool_input)
+    touches = _touches_state_file(tool, tool_input, cwd, BATCH_REL)
+    if touches is None:
+        _block_batch_if_too_large(cwd, tool_input)
         return
-    if not toca:
+    if not touches:
         return
-    if not _gate_po_1_passed_seguro(cwd):
+    if not _safe_gate_po_1_passed(cwd):
         return  # congelamento ainda não ligou: nada aqui para proteger
-    novo = _batch_from_content(tool, tool_input)
-    if isinstance(novo, dict) and novo.get("backlog_aprovado"):
+    new_batch = _batch_from_content(tool, tool_input)
+    if isinstance(new_batch, dict) and new_batch.get("backlog_aprovado"):
         return  # preserva a aprovação: passa, mesmo mudando outros campos
     block(
         "[spec-gate] DESLIGAMENTO DE backlog_aprovado BLOQUEADO. "
@@ -1084,25 +1084,25 @@ def guard_po_gate(tool, tool_input, cwd):
     descrita em "MODELO DE CAMADAS" acima de `write_targets`, não uma
     barreira à prova de qualquer comando Bash.
     """
-    gates = _open_gates_seguro(cwd)
+    gates = _safe_open_gates(cwd)
     if not gates:
         return
-    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, PHASE_REL)
-    if toca is None:
-        _bloqueia_se_grande_demais(cwd, ".specgate/phase")
+    touches = _touches_state_file(tool, tool_input, cwd, PHASE_REL)
+    if touches is None:
+        _block_if_too_large(cwd, ".specgate/phase")
         return
-    if not toca:
+    if not touches:
         return
-    nomes = ", ".join(str(g.get("checkpoint", "?")) for g in gates)
+    names = ", ".join(str(g.get("checkpoint", "?")) for g in gates)
     block(
-        f"[spec-gate] GATE DE PO ABERTO ({nomes}). O fluxo não avança de fase "
+        f"[spec-gate] GATE DE PO ABERTO ({names}). O fluxo não avança de fase "
         "enquanto o PO não decidir. NÃO tente contornar o bloqueio nem editar "
         "o arquivo de fase por outro caminho. Apresente ao PO a decisão "
         "pendente, em uma linha e com opções concretas, e aguarde a resposta."
     )
 
 
-def _rodada_int(g):
+def _round_int(g):
     """Número da rodada de um gate, como int >= 1 — ou None se o campo
     está PRESENTE mas malformado (nunca levanta, para não gerar traceback
     num hook bloqueante).
@@ -1147,7 +1147,7 @@ def _gate_key(g):
     `_rodadas_malformadas`, checada em `guard_gate_clear` antes de qualquer
     lógica que dependa de `_gate_key`.
     """
-    return (str(g.get("checkpoint", "")), str(g.get("pbi", "")), _rodada_int(g))
+    return (str(g.get("checkpoint", "")), str(g.get("pbi", "")), _round_int(g))
 
 
 def _pbi_series_key(g):
@@ -1161,14 +1161,14 @@ def _pbi_series_key(g):
     return (str(g.get("checkpoint", "")), str(g.get("pbi", "")))
 
 
-def _rodadas_malformadas(novos):
+def _malformed_rounds(new_gates):
     """Entradas em `novos` cujo campo "rodada" está PRESENTE mas é
     inválido (ausência é tratada como 1 em `_rodada_int`, não malformação).
     """
-    return [g for g in novos if "rodada" in g and _rodada_int(g) is None]
+    return [g for g in new_gates if "rodada" in g and _round_int(g) is None]
 
 
-def _rodada_invalida(anteriores, novos):
+def _invalid_round(previous, new_gates):
     """Amarras 1 e 2 do mecanismo de rodada (Task 9): valida a ABERTURA
     genuína de uma rodada nova de uma série (checkpoint, pbi).
 
@@ -1199,37 +1199,37 @@ def _rodada_invalida(anteriores, novos):
       Rodada anterior 'aprovado' (o PBI passou, não há o que reabrir) ou
       ainda 'aguardando-po' (ninguém decidiu nada ainda) não legitima nada.
     """
-    anteriores_completa = {_gate_key(a) for a in anteriores}
-    ofensores_pulo = []
-    ofensores_sem_reprovacao = []
-    for g in novos:
+    previous_keys = {_gate_key(a) for a in previous}
+    skip_offenders = []
+    unlegitimized_offenders = []
+    for g in new_gates:
         if g.get("status") != "aguardando-po":
             continue
-        rodada = _rodada_int(g)
-        if rodada is None:
+        round_ = _round_int(g)
+        if round_ is None:
             continue  # malformada: já bloqueada à parte por _rodadas_malformadas
-        if _gate_key(g) in anteriores_completa:
+        if _gate_key(g) in previous_keys:
             continue  # não é abertura nova desta rodada — é preservação
-        serie = _pbi_series_key(g)
-        existentes = [
-            _rodada_int(a) for a in anteriores if _pbi_series_key(a) == serie
+        series = _pbi_series_key(g)
+        existing = [
+            _round_int(a) for a in previous if _pbi_series_key(a) == series
         ]
-        existentes = [r for r in existentes if r is not None]
-        esperado = (max(existentes) if existentes else 0) + 1
-        if rodada != esperado:
-            ofensores_pulo.append(g)
+        existing = [r for r in existing if r is not None]
+        expected = (max(existing) if existing else 0) + 1
+        if round_ != expected:
+            skip_offenders.append(g)
             continue
-        if rodada > 1:
-            anterior_rodada = rodada - 1
-            legitima = any(
-                _pbi_series_key(a) == serie
-                and _rodada_int(a) == anterior_rodada
-                and a.get("status") in STATUS_QUE_LEGITIMAM_RODADA
-                for a in anteriores
+        if round_ > 1:
+            previous_round = round_ - 1
+            legitimate = any(
+                _pbi_series_key(a) == series
+                and _round_int(a) == previous_round
+                and a.get("status") in STATUSES_THAT_LEGITIMIZE_ROUND
+                for a in previous
             )
-            if not legitima:
-                ofensores_sem_reprovacao.append(g)
-    return ofensores_pulo, ofensores_sem_reprovacao
+            if not legitimate:
+                unlegitimized_offenders.append(g)
+    return skip_offenders, unlegitimized_offenders
 
 
 def _gate_label(g):
@@ -1240,11 +1240,11 @@ def _gate_label(g):
     """
     checkpoint = g.get("checkpoint", "?")
     pbi = g.get("pbi")
-    rodada = g.get("rodada", 1)
+    round_ = g.get("rodada", 1)
     label = str(checkpoint)
     if pbi:
         label += f"/{pbi}"
-    return f"{label} (rodada {rodada})"
+    return f"{label} (rodada {round_})"
 
 
 def _gates_from_content(tool, tool_input):
@@ -1269,7 +1269,7 @@ def _gates_from_content(tool, tool_input):
     return [g for g in data if isinstance(g, dict)]
 
 
-def _has_human_turn_seguro(cwd, opened_at_seq):
+def _safe_has_human_turn(cwd, opened_at_seq):
     """Wrapper fail-open sobre specgate_state.has_human_turn_since.
 
     Mesmo raciocínio de `_open_gates_seguro`: módulo ausente ou presente mas
@@ -1285,7 +1285,7 @@ def _has_human_turn_seguro(cwd, opened_at_seq):
         return True
 
 
-def _seq_atual_seguro(cwd):
+def _safe_current_seq(cwd):
     """Wrapper fail-open sobre specgate_state.read_seq.
 
     Mesmo raciocínio dos demais `_seguro`: módulo ausente ou incompleto não
@@ -1310,7 +1310,7 @@ def _opened_at_seq_int(g):
         return None
 
 
-def _anterior_aberto_da_chave(anteriores_da_chave):
+def _previous_open_for_key(previous_for_key):
     """A entrada ANTERIOR desta chave cujo status era 'aguardando-po', se
     houver — None se a chave nunca existiu ou só existia já decidida.
 
@@ -1319,13 +1319,13 @@ def _anterior_aberto_da_chave(anteriores_da_chave):
     nunca "existiu alguma vez com esse valor" (que é o que a versão antiga
     checava, e é exatamente o furo da chave decidida reaberta).
     """
-    for a in anteriores_da_chave:
+    for a in previous_for_key:
         if a.get("status") == "aguardando-po":
             return a
     return None
 
 
-def _anterior_decidido_da_chave(anteriores_da_chave):
+def _previous_decided_for_key(previous_for_key):
     """A entrada ANTERIOR desta chave cujo status já era decidido (≠
     'aguardando-po'), se houver — None se a chave nunca existiu ou só
     existia aberta.
@@ -1339,13 +1339,13 @@ def _anterior_decidido_da_chave(anteriores_da_chave):
     gate já decidido passam por este mesmo caminho, sem depender do valor
     novo declarado (que o próprio Claude escreve e não é confiável).
     """
-    for a in anteriores_da_chave:
+    for a in previous_for_key:
         if a.get("status") != "aguardando-po":
             return a
     return None
 
 
-def _mutacao_invalida(cwd, anteriores, novos):
+def _invalid_mutation(cwd, previous, new_gates):
     """Impõe o modelo unificado de mutação de uma chave (checkpoint, pbi)
     entre o estado ANTERIOR em disco e o conteúdo NOVO desta escrita,
     devolvendo `(ofensores_abertura, ofensores_decisao, ofensores_decidido)`.
@@ -1410,25 +1410,25 @@ def _mutacao_invalida(cwd, anteriores, novos):
     mantendo o status, e reabrir como 'aguardando-po' (histórico ou
     fresco) — as três formas de mexer numa chave já congelada.
     """
-    anteriores_por_chave = {}
-    for g in anteriores:
-        anteriores_por_chave.setdefault(_gate_key(g), []).append(g)
+    previous_by_key = {}
+    for g in previous:
+        previous_by_key.setdefault(_gate_key(g), []).append(g)
 
-    seq_atual = _seq_atual_seguro(cwd)
-    ofensores_abertura = []
-    ofensores_decisao = []
-    ofensores_decidido = []
-    for g in novos:
-        chave = _gate_key(g)
-        anteriores_da_chave = anteriores_por_chave.get(chave, [])
-        anterior_aberto = _anterior_aberto_da_chave(anteriores_da_chave)
-        anterior_aberto_seq = (
-            _opened_at_seq_int(anterior_aberto) if anterior_aberto is not None else None
+    current_seq = _safe_current_seq(cwd)
+    opening_offenders = []
+    decision_offenders = []
+    decided_offenders = []
+    for g in new_gates:
+        key = _gate_key(g)
+        previous_for_key = previous_by_key.get(key, [])
+        previous_open = _previous_open_for_key(previous_for_key)
+        previous_open_seq = (
+            _opened_at_seq_int(previous_open) if previous_open is not None else None
         )
-        anterior_decidido = _anterior_decidido_da_chave(anteriores_da_chave)
+        previous_decided = _previous_decided_for_key(previous_for_key)
         opened_at_seq = _opened_at_seq_int(g)
 
-        if anterior_decidido is not None:
+        if previous_decided is not None:
             # Categoria 2: a chave já era um registro congelado antes desta
             # escrita. Não importa o status novo declarado (decidido de
             # novo, ou 'aguardando-po') nem o valor de `opened_at_seq` —
@@ -1437,32 +1437,32 @@ def _mutacao_invalida(cwd, anteriores, novos):
             # porque uma chave decidida não deve mais entrar nelas: seria
             # tratar uma mutação de registro congelado como se fosse uma
             # abertura ou decisão legítimas.
-            anterior_decidido_seq = _opened_at_seq_int(anterior_decidido)
+            previous_decided_seq = _opened_at_seq_int(previous_decided)
             if (
-                g.get("status") != anterior_decidido.get("status")
-                or opened_at_seq != anterior_decidido_seq
+                g.get("status") != previous_decided.get("status")
+                or opened_at_seq != previous_decided_seq
             ):
-                ofensores_decidido.append(g)
+                decided_offenders.append(g)
             continue
 
         if g.get("status") == "aguardando-po":
             if opened_at_seq is None:
                 # Malformado (string/nulo/etc.): não dá para confiar no
                 # valor. Lado seguro é bloquear, nunca supor que está ok.
-                ofensores_abertura.append(g)
+                opening_offenders.append(g)
                 continue
-            if anterior_aberto is not None and anterior_aberto_seq == opened_at_seq:
+            if previous_open is not None and previous_open_seq == opened_at_seq:
                 continue  # preservação genuína: nada a exigir
-            if opened_at_seq < seq_atual:
-                ofensores_abertura.append(g)
+            if opened_at_seq < current_seq:
+                opening_offenders.append(g)
         else:
-            if anterior_aberto is not None and opened_at_seq != anterior_aberto_seq:
-                ofensores_decisao.append(g)
+            if previous_open is not None and opened_at_seq != previous_open_seq:
+                decision_offenders.append(g)
 
-    return ofensores_abertura, ofensores_decisao, ofensores_decidido
+    return opening_offenders, decision_offenders, decided_offenders
 
 
-def _gates_deletados_indevidamente(abertos, novos):
+def _improperly_deleted_gates(open_gates_, new_gates):
     """Gates que estavam 'aguardando-po' e desaparecem da escrita nova.
 
     Fecha a Aresta B: o chokepoint deste guard é "gate aberto bloqueia
@@ -1475,11 +1475,11 @@ def _gates_deletados_indevidamente(abertos, novos):
     Deletar/omitir uma chave que já estava DECIDIDA antes (não em
     `abertos`) é limpeza legítima e não entra aqui.
     """
-    novos_chaves = {_gate_key(g) for g in novos}
-    return [g for g in abertos if _gate_key(g) not in novos_chaves]
+    new_keys = {_gate_key(g) for g in new_gates}
+    return [g for g in open_gates_ if _gate_key(g) not in new_keys]
 
 
-def _decided_without_turn(cwd, abertos, anteriores, novos):
+def _decided_without_turn(cwd, open_gates_, previous, new_gates):
     """Gates que esta escrita libera efetivamente sem turno humano posterior.
 
     Cobre duas formas de liberação sem turno, ambas sobre CHAVE
@@ -1522,45 +1522,45 @@ def _decided_without_turn(cwd, abertos, anteriores, novos):
     decidido seria barrada por "falta de turno" mesmo não sendo decisão
     nenhuma, já que o `opened_at_seq` histórico nunca muda.
     """
-    abertos_por_chave = {_gate_key(g): g for g in abertos}
-    anteriores_por_chave = {_gate_key(g): g for g in anteriores}
+    open_by_key = {_gate_key(g): g for g in open_gates_}
+    previous_by_key = {_gate_key(g): g for g in previous}
 
-    novos_por_chave = {}
-    for g in novos:
-        novos_por_chave.setdefault(_gate_key(g), []).append(g)
+    new_by_key = {}
+    for g in new_gates:
+        new_by_key.setdefault(_gate_key(g), []).append(g)
 
-    ofensores = []
-    for chave in set(abertos_por_chave) | set(novos_por_chave):
-        entradas = novos_por_chave.get(chave)
-        anterior_aberto = abertos_por_chave.get(chave)
+    offenders = []
+    for key in set(open_by_key) | set(new_by_key):
+        entries = new_by_key.get(key)
+        previous_open = open_by_key.get(key)
 
-        if entradas is None:
+        if entries is None:
             continue  # deleção: tratada por _gates_deletados_indevidamente
 
-        if anterior_aberto is None and chave in anteriores_por_chave:
+        if previous_open is None and key in previous_by_key:
             continue  # já decidida antes: territorio exclusivo da categoria 2
 
-        todas_aguardando = all(e.get("status") == "aguardando-po" for e in entradas)
-        if todas_aguardando:
+        all_waiting = all(e.get("status") == "aguardando-po" for e in entries)
+        if all_waiting:
             continue  # segue aberto (ou é abertura nova): nada foi decidido
 
         # É decisão: entrada única com status != aguardando-po, ou chave
         # duplicada ambígua onde nem tudo é aguardando-po.
-        if chave not in anteriores_por_chave:
+        if key not in previous_by_key:
             # Chave nunca existiu no estado anterior completo: aprovação
             # fabricada do zero. Bloqueia sempre — não há gate anterior
             # cujo turno humano possa validar isto.
-            ofensores.append(entradas[0])
+            offenders.append(entries[0])
             continue
 
         # Aqui `anterior_aberto` é necessariamente não-None: a chave está em
         # `anteriores` (senão teria caído no ramo acima) e o caso "em
         # `anteriores` mas não aberta" já saiu por `continue` lá em cima
         # (território exclusivo da categoria 2).
-        if not _has_human_turn_seguro(cwd, anterior_aberto.get("opened_at_seq", 0)):
-            ofensores.append(anterior_aberto)
+        if not _safe_has_human_turn(cwd, previous_open.get("opened_at_seq", 0)):
+            offenders.append(previous_open)
 
-    return ofensores
+    return offenders
 
 
 def guard_gate_clear(tool, tool_input, cwd):
@@ -1644,16 +1644,16 @@ def guard_gate_clear(tool, tool_input, cwd):
     comando /spec-gate mais honestidade do modelo, igual ao gatilho de
     granularidade. Documentado assim de propósito, sem inflar.
     """
-    toca = _toca_arquivo_de_estado(tool, tool_input, cwd, GATE_REL)
-    if toca is None:
-        _bloqueia_se_grande_demais(cwd, ".specgate/gate.json")
+    touches = _touches_state_file(tool, tool_input, cwd, GATE_REL)
+    if touches is None:
+        _block_if_too_large(cwd, ".specgate/gate.json")
         return
-    if not toca:
+    if not touches:
         return
-    abertos = _open_gates_seguro(cwd)
-    novos = _gates_from_content(tool, tool_input)
+    open_gates_ = _safe_open_gates(cwd)
+    new_gates = _gates_from_content(tool, tool_input)
 
-    if novos is None:
+    if new_gates is None:
         # Conteúdo indisponível (Edit, ou Bash como `rm gate.json`,
         # `> gate.json`, `truncate`, `sed -i`...): o fluxo legítimo SEMPRE
         # usa Write com o JSON completo, então não há como confirmar que a
@@ -1662,14 +1662,14 @@ def guard_gate_clear(tool, tool_input, cwd):
         # aberto — mesmo com turno humano presente, porque turno não prova
         # nada sobre o CONTEÚDO que este comando produz. Sem gate aberto,
         # não há nada aqui para proteger.
-        if not abertos:
+        if not open_gates_:
             return
-        nomes = ", ".join(
+        names = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
-            for g in abertos
+            for g in open_gates_
         )
         block(
-            f"[spec-gate] ESCRITA NÃO VERIFICÁVEL NO GATE BLOQUEADA ({nomes}). "
+            f"[spec-gate] ESCRITA NÃO VERIFICÁVEL NO GATE BLOQUEADA ({names}). "
             "Este comando não expõe o conteúdo final de .specgate/gate.json "
             "(Edit, ou Bash como rm/truncate/redirecionamento), e existe gate "
             "aberto aguardando o PO. Sem ver o conteúdo resultante não há como "
@@ -1683,7 +1683,7 @@ def guard_gate_clear(tool, tool_input, cwd):
     # uma chave fabricada do zero (nunca aberta) só é pega olhando também
     # `anteriores` (estado completo em disco), então sempre computamos e
     # chamamos, mesmo com `abertos` vazio.
-    anteriores = _read_gates_seguro(cwd)
+    previous = _safe_read_gates(cwd)
 
     # Rodada malformada (Task 9): checado ANTES de qualquer lógica que use
     # `_gate_key`/`_rodada_int` para agrupar ou comparar — um valor
@@ -1691,11 +1691,11 @@ def guard_gate_clear(tool, tool_input, cwd):
     # booleano, lista...) não pode virar identidade de gate nenhuma.
     # Ausência do campo é tratada como rodada 1 em `_rodada_int` (nunca cai
     # aqui); só a presença malformada bloqueia.
-    malformadas = _rodadas_malformadas(novos)
-    if malformadas:
-        nomes = ", ".join(str(g.get("rodada")) for g in malformadas)
+    malformed = _malformed_rounds(new_gates)
+    if malformed:
+        names = ", ".join(str(g.get("rodada")) for g in malformed)
         block(
-            f"[spec-gate] RODADA INVÁLIDA BLOQUEADA (valor: {nomes}). O campo "
+            f"[spec-gate] RODADA INVÁLIDA BLOQUEADA (valor: {names}). O campo "
             "'rodada' precisa ser um inteiro >= 1 (ou string equivalente). "
             "Omitir o campo é tratado como rodada 1 por compatibilidade, mas "
             "um valor presente e malformado não pode ser usado para "
@@ -1708,23 +1708,23 @@ def guard_gate_clear(tool, tool_input, cwd):
     # status em STATUS_QUE_LEGITIMAM_RODADA. Checado antes de
     # `_mutacao_invalida` pelo mesmo motivo da Aresta A: é sobre a
     # identidade/abertura da chave, não sobre decisão.
-    ofensores_rodada_pulada, ofensores_sem_reprovacao = _rodada_invalida(anteriores, novos)
-    if ofensores_rodada_pulada:
-        nomes = ", ".join(_gate_label(g) for g in ofensores_rodada_pulada)
+    round_skip_offenders, unlegitimized_offenders = _invalid_round(previous, new_gates)
+    if round_skip_offenders:
+        names = ", ".join(_gate_label(g) for g in round_skip_offenders)
         block(
-            f"[spec-gate] RODADA FORA DE SEQUÊNCIA BLOQUEADA ({nomes}). A "
+            f"[spec-gate] RODADA FORA DE SEQUÊNCIA BLOQUEADA ({names}). A "
             "rodada de uma abertura nova é DERIVADA, não escolhida: precisa "
             "ser exatamente max(rodada já existente daquele checkpoint+pbi) + "
             "1 — nunca pulando um número, nunca repetindo uma rodada já "
             "registrada. Abra a próxima rodada na sequência certa."
         )
 
-    if ofensores_sem_reprovacao:
-        nomes = ", ".join(_gate_label(g) for g in ofensores_sem_reprovacao)
-        status_legitimos = " ou ".join(f"'{s}'" for s in STATUS_QUE_LEGITIMAM_RODADA)
+    if unlegitimized_offenders:
+        names = ", ".join(_gate_label(g) for g in unlegitimized_offenders)
+        legitimate_statuses = " ou ".join(f"'{s}'" for s in STATUSES_THAT_LEGITIMIZE_ROUND)
         block(
-            f"[spec-gate] RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA ({nomes}). "
-            f"Só um evento de decisão REGISTRADO (status {status_legitimos} — "
+            f"[spec-gate] RODADA SEM REPROVAÇÃO ANTERIOR BLOQUEADA ({names}). "
+            f"Só um evento de decisão REGISTRADO (status {legitimate_statuses} — "
             "conforme o checkpoint) da rodada anterior daquele checkpoint+pbi "
             "legitima abrir a rodada seguinte — rodada anterior 'aprovado' "
             "(o PBI já passou) ou ainda 'aguardando-po' (ninguém decidiu) "
@@ -1736,16 +1736,16 @@ def guard_gate_clear(tool, tool_input, cwd):
     # um opened_at_seq forjado (rebaixado, herdado de uma chave decidida,
     # ou trocado ao decidir) forjaria a aprovação seguinte, então isto é
     # checado por si só, com mensagens próprias.
-    ofensores_abertura, ofensores_decisao_seq, ofensores_decidido = _mutacao_invalida(
-        cwd, anteriores, novos
+    opening_offenders, decision_seq_offenders, decided_offenders = _invalid_mutation(
+        cwd, previous, new_gates
     )
-    if ofensores_abertura:
-        nomes = ", ".join(
+    if opening_offenders:
+        names = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
-            for g in ofensores_abertura
+            for g in opening_offenders
         )
         block(
-            f"[spec-gate] ABERTURA DE GATE ANTEDATADA BLOQUEADA ({nomes}). "
+            f"[spec-gate] ABERTURA DE GATE ANTEDATADA BLOQUEADA ({names}). "
             "Um gate recém-aberto ou reaberto não pode declarar opened_at_seq "
             "menor que o seq atual do projeto — isso tornaria a aprovação "
             "seguinte forjável, porque o seq já teria 'ultrapassado' aquele "
@@ -1756,13 +1756,13 @@ def guard_gate_clear(tool, tool_input, cwd):
             "deve ser o seq atual (ou maior), nunca herdado do passado."
         )
 
-    if ofensores_decisao_seq:
-        nomes = ", ".join(
+    if decision_seq_offenders:
+        names = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
-            for g in ofensores_decisao_seq
+            for g in decision_seq_offenders
         )
         block(
-            f"[spec-gate] DECISÃO ALTERA opened_at_seq BLOQUEADA ({nomes}). O "
+            f"[spec-gate] DECISÃO ALTERA opened_at_seq BLOQUEADA ({names}). O "
             "opened_at_seq de um gate aberto é imutável ao decidir: precisa "
             "continuar exatamente igual ao valor registrado na abertura. "
             "Mudá-lo (para baixo ou para cima) na MESMA escrita que decide "
@@ -1782,13 +1782,13 @@ def guard_gate_clear(tool, tool_input, cwd):
     # imutável. Mudar de ideia exige abrir um gate NOVO numa escrita
     # separada — o que cai na categoria 3, essa sim condicionada a
     # `opened_at_seq >= seq_atual` (fala do PO).
-    if ofensores_decidido:
-        nomes = ", ".join(
+    if decided_offenders:
+        names = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
-            for g in ofensores_decidido
+            for g in decided_offenders
         )
         block(
-            f"[spec-gate] GATE DECIDIDO É IMUTÁVEL BLOQUEADO ({nomes}). Uma "
+            f"[spec-gate] GATE DECIDIDO É IMUTÁVEL BLOQUEADO ({names}). Uma "
             "vez que um gate sai de 'aguardando-po' pela primeira vez, ele "
             "vira registro de auditoria congelado: nenhuma escrita seguinte "
             "pode mudar seu status (nem entre dois status decididos, nem "
@@ -1803,30 +1803,30 @@ def guard_gate_clear(tool, tool_input, cwd):
 
     # Aresta B: gate aberto que desaparece do conteúdo novo é auto-liberação
     # por deleção, sempre — "apagar não é decidir".
-    deletados = _gates_deletados_indevidamente(abertos, novos)
-    if deletados:
-        nomes = ", ".join(
+    deleted = _improperly_deleted_gates(open_gates_, new_gates)
+    if deleted:
+        names = ", ".join(
             f"{g.get('checkpoint', '?')}" + (f"/{g['pbi']}" if g.get("pbi") else "")
-            for g in deletados
+            for g in deleted
         )
         block(
-            f"[spec-gate] GATE ABERTO DELETADO BLOQUEADO ({nomes}). Apagar ou "
+            f"[spec-gate] GATE ABERTO DELETADO BLOQUEADO ({names}). Apagar ou "
             "omitir do JSON um gate que aguarda o PO é auto-liberação por "
             "deleção, mesmo com turno humano presente: a decisão legítima MUDA "
             "o status do gate (aprovado/reprovado), preservando a entrada como "
             "registro — nunca a apaga. 'Apagar não é decidir'."
         )
 
-    ofensores = _decided_without_turn(cwd, abertos, anteriores, novos)
-    if not ofensores:
+    offenders = _decided_without_turn(cwd, open_gates_, previous, new_gates)
+    if not offenders:
         return
-    nomes = ", ".join(
+    names = ", ".join(
         f"{g.get('checkpoint', '?')}"
         + (f"/{g['pbi']}" if g.get("pbi") else "")
-        for g in ofensores
+        for g in offenders
     )
     block(
-        f"[spec-gate] AUTO-LIBERAÇÃO BLOQUEADA ({nomes}). Nenhuma mensagem do "
+        f"[spec-gate] AUTO-LIBERAÇÃO BLOQUEADA ({names}). Nenhuma mensagem do "
         "PO chegou desde que este gate abriu, então a decisão dele não existe "
         "e não pode ser registrada. Este bloqueio é o sistema funcionando: "
         "apresente a decisão pendente ao PO e aguarde a resposta real."
@@ -1877,7 +1877,7 @@ def main():
         # O freeze precisa de um FATO EM DISCO, não de narrativa: o hook só
         # enxerga arquivos. Antes do Gate PO 1 a spec ainda está sendo
         # escrita pelo spec-analyst e não é contrato; depois dele, é.
-        if _gate_po_1_passed_seguro(cwd):
+        if _safe_gate_po_1_passed(cwd):
             guard_spec_lock(tool, tool_input, cwd, cfg)
         if tool == "Bash":
             guard_destructive(tool_input, cwd, cfg)
