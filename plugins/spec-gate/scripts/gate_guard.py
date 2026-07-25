@@ -781,19 +781,28 @@ def _toca_arquivo_de_estado(tool, tool_input, cwd, rel):
 
 
 def _bloqueia_se_grande_demais(cwd, nome_arquivo):
-    """Chamado pelos 4 guards de estado quando `_toca_arquivo_de_estado`
-    devolve None (comando grande demais para parsear com segurança, I5).
+    """Chamado por `guard_po_gate` e `guard_gate_clear` quando
+    `_toca_arquivo_de_estado` devolve None (comando grande demais para
+    parsear com segurança, I5).
+
+    ACHADO DA REVISÃO: este fallback ("bloqueia se há gate aberto, libera
+    se não há") era aplicado de forma UNIFORME aos 4 guards de estado
+    (seq/batch/phase/gate.json), mas só é a condição normal de bloqueio
+    DESTES DOIS — `guard_seq_lock` e `guard_batch_lock` têm fallback
+    próprio (`_bloqueia_seq_grande_demais` e `_bloqueia_batch_grande_demais`
+    logo abaixo), porque a condição normal de bloqueio deles não depende de
+    gate algum. Ver a tabela completa nos docstrings de cada guard_*_lock.
 
     Regra do dono do produto: não conseguir verificar não é o mesmo que
     verificar e estar tudo bem. Mas aqui não há uma verificação FALHANDO
     (como no gate de regressão) — há uma decisão de CUSTO: parsear um
-    comando de dezenas/centenas de KB por token, em cada um dos 4 guards,
-    era exatamente a regressão de latência que este fix corrige. O lado
-    seguro condicionado: bloqueia se existir QUALQUER gate aberto (há algo
-    em jogo agora que uma escrita não inspecionada poderia comprometer);
-    libera se não houver nenhum gate aberto (nada para proteger agora, e um
-    comando grande é, de longe, mais provável de ser um heredoc legítimo do
-    que uma tentativa de burlar o guard por meio dele).
+    comando de dezenas/centenas de KB por token, em cada guard, era
+    exatamente a regressão de latência que este fix corrige. O lado seguro
+    condicionado: bloqueia se existir QUALQUER gate aberto (há algo em jogo
+    agora que uma escrita não inspecionada poderia comprometer); libera se
+    não houver nenhum gate aberto (nada para proteger agora, e um comando
+    grande é, de longe, mais provável de ser um heredoc legítimo do que uma
+    tentativa de burlar o guard por meio dele).
     """
     if not _open_gates_seguro(cwd):
         return
@@ -806,6 +815,91 @@ def _bloqueia_se_grande_demais(cwd, nome_arquivo):
         "agora. Não conseguir verificar não é o mesmo que verificar e estar "
         "tudo bem: quebre a operação em comandos menores, ou escreva por um "
         "caminho que não precise de um comando Bash gigante."
+    )
+
+
+def _bloqueia_seq_grande_demais(cwd, tool_input):
+    """Fallback de `guard_seq_lock` quando o comando Bash é grande demais
+    para reparsear por token (I5, ver BASH_CMD_TAMANHO_MAXIMO_VERIFICAVEL).
+
+    Ao contrário de `_bloqueia_se_grande_demais` (guard_po_gate e
+    guard_gate_clear, cuja condição normal já depende de gate aberto), a
+    condição normal de `guard_seq_lock` NÃO depende de gate nenhum: ele
+    bloqueia SEMPRE que o alvo é .specgate/seq (ver docstring dele). "Não
+    conseguir verificar não é o mesmo que verificar e estar tudo bem"
+    aplicado aqui significa bloquear sempre que o comando grande ainda tem
+    alguma chance de mirar .specgate/seq — não bloquear todo comando
+    grande, relacionado ou não, o que seria fricção desproporcional e uma
+    regra diferente da que o dono do produto pediu.
+
+    Pré-checagem O(n) barata: uma busca de substring no comando BRUTO, sem
+    tokenizar. Se ".specgate/seq" nem aparece em lugar nenhum do texto,
+    nenhum dos mecanismos de escrita que `write_targets` reconhece
+    (redirecionamento, tee, sed -i, interpretador inline, heredoc, dd,
+    install) poderia estar mirando nele — e o custo pago é o de uma busca
+    de substring em Python (implementação em C, análoga a memmem), não o
+    de tokenizar e resolver realpath por candidato, que é a regressão de
+    latência que este fix corrige. A substring aparecer não PROVA escrita
+    de verdade (poderia ser comentário, leitura, parte de uma string maior)
+    — mas como o lado seguro deste guard já é bloquear incondicionalmente
+    quando o alvo É .specgate/seq, a presença já basta para decidir.
+    """
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or SEQ_REL not in cmd:
+        return
+    block(
+        "[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO (.specgate/seq). "
+        "Este comando Bash passa de 64KB e menciona .specgate/seq — tamanho "
+        "acima do qual o guard não reparseia o comando inteiro por token (é "
+        "a regressão de latência que este fix corrige), então não há como "
+        "confirmar que ele não escreve no contador de turnos. A condição "
+        "normal deste guard já bloqueia QUALQUER escrita reconhecida em "
+        ".specgate/seq, com ou sem gate aberto — não conseguir verificar "
+        "não muda esse lado seguro. Quebre a operação em comandos menores, "
+        "ou escreva por um caminho que não precise de um comando Bash "
+        "gigante."
+    )
+
+
+def _bloqueia_batch_grande_demais(cwd, tool_input):
+    """Fallback de `guard_batch_lock` quando o comando Bash é grande demais
+    para reparsear por token (I5).
+
+    A condição normal de `guard_batch_lock` só bloqueia quando o disco JÁ
+    tem backlog_aprovado: true (congelamento ligado) — sem isso não há
+    nada para proteger, gate aberto ou não (ver docstring dele). O fallback
+    seguro espelha exatamente essa condição, em vez do fallback genérico de
+    `_bloqueia_se_grande_demais`: usar aquele aqui bloquearia comando
+    grande legítimo sempre que existisse QUALQUER gate aberto no lote,
+    mesmo sem nada em jogo em batch.json, e LIBERARIA justamente o caso que
+    importa (backlog_aprovado true, nenhum gate de PO aberto no momento —
+    o caso comum durante o fluxo normal do lote), que é exatamente o
+    bypass relatado.
+
+    Mesma pré-checagem O(n) barata do seq (substring literal no comando
+    bruto, sem tokenizar): sem ".specgate/batch.json" em lugar nenhum do
+    texto, nenhum mecanismo de escrita reconhecido por `write_targets`
+    poderia estar mirando nele, e um heredoc grande alheio ao spec-gate
+    (ex.: escrevendo um arquivo de código legítimo) continua passando
+    mesmo com backlog_aprovado true no disco — sem esta pré-checagem, TODO
+    Bash grande seria bloqueado nesse caso, fricção desproporcional ao
+    risco.
+    """
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or BATCH_REL not in cmd:
+        return
+    if not _gate_po_1_passed_seguro(cwd):
+        return  # congelamento ainda não ligou: nada aqui para proteger
+    block(
+        "[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO (.specgate/batch.json). "
+        "Este comando Bash passa de 64KB e menciona .specgate/batch.json — "
+        "tamanho acima do qual o guard não reparseia o comando inteiro por "
+        "token (é a regressão de latência que este fix corrige), então não "
+        "há como confirmar que ele preserva backlog_aprovado: true, que já "
+        "está ligado no disco. Não conseguir verificar não é o mesmo que "
+        "verificar e estar tudo bem: quebre a operação em comandos "
+        "menores, ou escreva por um caminho que não precise de um comando "
+        "Bash gigante."
     )
 
 
@@ -898,7 +992,7 @@ def guard_seq_lock(tool, tool_input, cwd):
     """
     toca = _toca_arquivo_de_estado(tool, tool_input, cwd, SEQ_REL)
     if toca is None:
-        _bloqueia_se_grande_demais(cwd, ".specgate/seq")
+        _bloqueia_seq_grande_demais(cwd, tool_input)
         return
     if not toca:
         return
@@ -959,7 +1053,7 @@ def guard_batch_lock(tool, tool_input, cwd):
     """
     toca = _toca_arquivo_de_estado(tool, tool_input, cwd, BATCH_REL)
     if toca is None:
-        _bloqueia_se_grande_demais(cwd, ".specgate/batch.json")
+        _bloqueia_batch_grande_demais(cwd, tool_input)
         return
     if not toca:
         return

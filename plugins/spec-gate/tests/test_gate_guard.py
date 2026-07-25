@@ -2071,10 +2071,16 @@ class BashGrandeDemaisTest(GuardBase):
     legítimo (`cat > arquivo <<'EOF' ... EOF`, dezenas de milhares de
     linhas) virava uma regressão de latência sentida em todo Bash.
 
-    Acima de ~64KB o comando passa a ser tratado como NÃO VERIFICÁVEL
-    pelos guards de estado: bloqueia se houver qualquer gate aberto (algo
-    em jogo agora que uma escrita não inspecionada poderia comprometer),
-    libera se não houver nada para proteger.
+    Acima de ~64KB o comando passa a ser tratado como NÃO VERIFICÁVEL. Esta
+    classe cobre o fallback de `guard_po_gate` e `guard_gate_clear`
+    especificamente (`_bloqueia_se_grande_demais`): bloqueia se houver
+    qualquer gate aberto (algo em jogo agora que uma escrita não
+    inspecionada poderia comprometer), libera se não houver nada para
+    proteger. `guard_seq_lock` e `guard_batch_lock` têm fallback PRÓPRIO,
+    diferente deste — ver `BashGrandeDemaisPorGuardTest` logo abaixo, que
+    fecha o bypass relatado (achado da revisão de otimização): um fallback
+    uniforme "bloqueia se há gate aberto" está ERRADO para esses dois, cuja
+    condição normal de bloqueio não depende de gate algum.
     """
 
     def _cmd_grande(self, alvo="algum-arquivo-qualquer.txt"):
@@ -2127,6 +2133,117 @@ class BashGrandeDemaisTest(GuardBase):
         self.state("phase", "testing")
         padding = " " * 70_000
         r = self.bash(f"cat src/somar.py{padding}")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+
+class BashGrandeDemaisPorGuardTest(GuardBase):
+    """Achado da revisão sobre a otimização de latência de BashGrandeDemaisTest
+    (I5): o fallback "bloqueia se há qualquer gate aberto" foi aplicado de
+    forma UNIFORME aos 4 guards de estado, mas só é a condição normal de
+    bloqueio de `guard_po_gate` e `guard_gate_clear`. Para os outros dois:
+
+    - `guard_seq_lock` bloqueia SEMPRE que o alvo é .specgate/seq,
+      independente de gate aberto (o contador só é mantido pelo hook de
+      eventos) — o fallback uniforme LIBERAVA um comando grande escrevendo
+      em .specgate/seq sempre que não houvesse gate aberto, embora o
+      comportamento normal (comando pequeno) bloqueie sempre.
+    - `guard_batch_lock` bloqueia quando o disco já tem
+      backlog_aprovado: true, com ou sem gate aberto — o fallback uniforme
+      LIBERAVA o desligamento de backlog_aprovado via comando grande
+      sempre que não houvesse gate aberto, que é justamente o caso comum
+      durante o fluxo (backlog aprovado, PBIs sendo trabalhados, nenhum
+      gate de PO pendente no momento).
+
+    Confirmado ao vivo antes deste fix: os dois `echo <70KB> > .specgate/seq`
+    e `echo <70KB> > .specgate/batch.json` (sem gate aberto) saíam com
+    rc=0 — bastava inflar o comando acima de 64KB para escrever o contador
+    de turnos ou desligar backlog_aprovado.
+
+    O fix usa uma pré-checagem O(n) barata (substring literal no comando
+    bruto, sem tokenizar) para não punir comando grande alheio a
+    .specgate/ — sem ela, `guard_batch_lock` bloquearia QUALQUER Bash
+    grande sempre que backlog_aprovado estivesse true no disco (o caso
+    comum durante o fluxo), o que seria fricção desproporcional.
+    """
+
+    def _cmd_grande(self, alvo):
+        padding = "x" * 70_000
+        return f"cat > {alvo} <<'EOF'\n{padding}\nEOF\n"
+
+    def test_comando_grande_escrevendo_seq_sem_gate_aberto_e_bloqueado(self):
+        # O bypass relatado, forma 1: escrever .specgate/seq via comando
+        # grande, sem nenhum gate aberto, passava (rc=0) antes deste fix.
+        r = self.bash(self._cmd_grande(".specgate/seq"))
+        self.assertEqual(r.returncode, 2, msg=f"stderr: {r.stderr}")
+        self.assertIn("COMANDO GRANDE DEMAIS PARA VERIFICAR", r.stderr)
+        self.assertIn(".specgate/seq", r.stderr)
+
+    def test_comando_grande_escrevendo_batch_com_backlog_aprovado_sem_gate_e_bloqueado(self):
+        # O bypass relatado, forma 2: com backlog_aprovado: true já no
+        # disco (o caso comum durante o fluxo) e nenhum gate aberto,
+        # desligar backlog_aprovado via comando grande passava (rc=0)
+        # antes deste fix.
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = self.bash(self._cmd_grande(".specgate/batch.json"))
+        self.assertEqual(r.returncode, 2, msg=f"stderr: {r.stderr}")
+        self.assertIn("COMANDO GRANDE DEMAIS PARA VERIFICAR", r.stderr)
+        self.assertIn(".specgate/batch.json", r.stderr)
+
+    def test_comando_grande_escrevendo_batch_sem_backlog_aprovado_e_permitido(self):
+        # Não-regressão: sem backlog_aprovado true no disco, não há nada
+        # para proteger em batch.json — comando grande passa, com ou sem
+        # gate aberto.
+        r = self.bash(self._cmd_grande(".specgate/batch.json"))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_comando_grande_alheio_ao_specgate_com_backlog_aprovado_e_permitido(self):
+        # A preocupação de falso positivo do relatório: com backlog_aprovado
+        # true no disco (comum durante o fluxo), um comando grande SEM
+        # NENHUMA relação com .specgate/ (heredoc legítimo escrevendo um
+        # arquivo de código qualquer) precisa continuar passando — a
+        # pré-checagem de substring evita bloquear todo Bash grande só
+        # porque backlog_aprovado está ligado.
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = self.bash(self._cmd_grande("algum-arquivo-de-codigo.py"))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_comando_grande_alheio_ao_specgate_sem_nada_aprovado_e_permitido(self):
+        # Teste obrigatório do relatório: comando grande sem relação com
+        # .specgate/, sem gate aberto e sem backlog_aprovado, passa.
+        r = self.bash(self._cmd_grande("algum-arquivo-de-codigo.py"))
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_comando_grande_escrevendo_seq_com_gate_aberto_tambem_bloqueado(self):
+        # Não-regressão: gate aberto não é condição para este guard, mas
+        # também não isenta — continua bloqueando.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "status": "aguardando-po", "opened_at_seq": 1}
+        ]))
+        r = self.bash(self._cmd_grande(".specgate/seq"))
+        self.assertEqual(r.returncode, 2, msg=f"stderr: {r.stderr}")
+        self.assertIn(".specgate/seq", r.stderr)
+
+    def test_comando_pequeno_escrevendo_seq_sem_gate_continua_bloqueado_como_hoje(self):
+        # Não-regressão: comportamento de hoje do caminho pequeno (não
+        # passa pelo fallback de comando grande) continua intacto.
+        r = self.bash("echo 9999 > .specgate/seq")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/seq BLOQUEADA", r.stderr)
+
+    def test_comando_pequeno_desligando_backlog_aprovado_continua_bloqueado_como_hoje(self):
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+        r = self.bash("printf '{}' > .specgate/batch.json")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("backlog_aprovado", r.stderr)
+
+    def test_sem_specgate_json_comando_grande_escrevendo_seq_e_inerte(self):
+        # Inércia: sem .specgate.json o guard inteiro é inerte, inclusive
+        # para o comando grande.
+        os.remove(os.path.join(self.tmp, ".specgate.json"))
+        r = self.bash(self._cmd_grande(".specgate/seq"))
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
 
 
