@@ -87,8 +87,8 @@ FASE 5 · COMMIT
 
 TRANSVERSAIS
   🔒 destrutivo — reset --hard, rm -rf, push --force
-  ⛔ GATE PO 4 · ambiguidade — estaciona o PBI (trabalho PRESERVADO),
-     pergunta entra na fila, fluxo segue pro próximo PBI
+  ⛔ GATE PO 4 · ambiguidade — estaciona o PBI (trabalho PRESERVADO, sem
+     perder contexto); fluxo PARA até o PO responder — não paraleliza
 ```
 
 **Custo assumido:** 1 sentada global + 2 paradas por PBI. Com 3 PBIs, 7 toques do PO.
@@ -252,10 +252,13 @@ implementação, não vigilância difusa.
 4. **Gates mecânicos intactos** — reexecutar os cenários do 0.1.0: leitura de `source_paths` na
    fase de testes, `git commit` com suíte vermelha, `rm -rf`, edição de spec durante o pipeline.
 5. **Ponta a ponta** — projeto de exemplo com 2 PBIs, um deles ambíguo de propósito: verificar
-   que o ambíguo estaciona com trabalho preservado e o fluxo segue pro outro. Provar em seguida
-   que **o commit WIP na branch `parked/*` passa** (exceção do gate de regressão funcionando com
-   a suíte vermelha), que a working tree volta limpa, que o PBI seguinte roda sem contaminação,
-   e que **retomar o estacionado devolve o trabalho inteiro**.
+   que o ambíguo estaciona com trabalho preservado (branch `parked/*`, commit WIP) e que o fluxo
+   PARA ali, reportando o gate pendente ao PO — não segue para o PBI seguinte enquanto o gate
+   de ambiguidade estiver `aguardando-po` (é o chokepoint de `guard_po_gate` funcionando, não
+   paralelismo). Depois que o PO responde, provar que **o commit WIP na branch `parked/*` passa**
+   (exceção do gate de regressão funcionando com a suíte vermelha), que a working tree volta
+   limpa, que o PBI seguinte roda sem contaminação, e que **retomar o estacionado devolve o
+   trabalho inteiro**.
 6. **Inércia** — sem `.specgate.json`, nenhum gate dispara.
 7. **Resposta parcial com dois gates abertos (comportamento do modelo, não fricção)** —
    estacionar PBI-03 e PBI-05, e responder apenas o PBI-03. O esperado é que só o 03 destrave.

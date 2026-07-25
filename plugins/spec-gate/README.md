@@ -55,7 +55,7 @@ Um único comando, auto-orientado: ele lê `.specgate/gate.json` e `.specgate/ba
 
 O fluxo tem seis fases, sempre pelo nome (nunca por número): **Concepção** (entrevista o PO e escreve os PBIs em `docs/backlog/`), **Refinamento** (caça ambiguidade e avalia granularidade), **Testes** (subagent `blackbox-tester` escreve os testes só a partir da spec, com leitura de `source_paths` bloqueada por hook), **Implementação** (até a suíte completa passar, com teto de tentativas), **Conformidade** (subagent `spec-reviewer` audita spec contra implementação em contexto isolado) e **Commit** (gate de regressão roda a suíte inteira antes de deixar passar).
 
-Quatro gates de PO pontuam esse fluxo, cada um parando o fluxo inteiro até uma resposta real do PO — **gate de backlog** (aprova os PBIs antes de qualquer teste), **gate de testes** (aprova os testes como contrato antes da implementação começar), **gate de aceite** (aprova a entrega antes do commit) e **gate de ambiguidade**, que abre sempre que um PBI é estacionado (branch `parked/NN-nome` com commit WIP) por não ter decisão do PO ainda, liberando o fluxo para seguir aos próximos itens da fila sem perder o trabalho parcial. Distintos destes, os gates mecânicos (black-box, regressão, destrutivo) agem sozinhos, sem parar para o PO — ver "O caminho do PBI" abaixo para a distinção completa.
+Quatro gates de PO pontuam esse fluxo, cada um parando o fluxo inteiro até uma resposta real do PO — **gate de backlog** (aprova os PBIs antes de qualquer teste), **gate de testes** (aprova os testes como contrato antes da implementação começar), **gate de aceite** (aprova a entrega antes do commit) e **gate de ambiguidade**, que abre sempre que um PBI é estacionado (branch `parked/NN-nome` com commit WIP) por não ter decisão do PO ainda. Estacionar **preserva o trabalho e evita perder contexto**, mas **não paraleliza**: o fluxo continua serializado, e só retoma quando o PO responde e a rodada seguinte é aberta. Distintos destes, os gates mecânicos (black-box, regressão, destrutivo) agem sozinhos, sem parar para o PO — ver "O caminho do PBI" abaixo para a distinção completa.
 
 ## Orquestração em sessão
 
@@ -145,8 +145,8 @@ FASE COMMIT
 
 TRANSVERSAIS
   🔒 destrutivo — reset --hard, rm -rf, push --force
-  ⛔ GATE DE AMBIGUIDADE — estaciona o PBI (trabalho PRESERVADO),
-     pergunta entra na fila, fluxo segue pro próximo PBI
+  ⛔ GATE DE AMBIGUIDADE — estaciona o PBI (trabalho PRESERVADO, sem
+     perder contexto); fluxo PARA até o PO responder — não paraleliza
 ```
 
 Dois tipos de gate coexistem, e não têm o mesmo comportamento:
@@ -202,7 +202,7 @@ A única propriedade genuinamente dura é diferente: o Claude **não fabrica um 
 
 ## Estacionamento
 
-Quando uma fase encontra ambiguidade que o PO ainda não decidiu, o PBI é estacionado em vez de travar o fluxo inteiro nele: `git checkout -b parked/NN-nome`, commit WIP (`git commit`, suíte pode estar vermelha — exceção do gate de regressão acima), volta pra branch principal com a árvore limpa, abre o **gate de ambiguidade**, e o fluxo segue para o próximo PBI da fila. O trabalho parcial fica preservado na branch, não em stash (frágil, some de vista) nem em worktree (peso morto para uma fila que processa um PBI por vez).
+Quando uma fase encontra ambiguidade que o PO ainda não decidiu, o PBI é estacionado em vez de travar o fluxo inteiro nele: `git checkout -b parked/NN-nome`, commit WIP (`git commit`, suíte pode estar vermelha — exceção do gate de regressão acima), volta pra branch principal com a árvore limpa, e abre o **gate de ambiguidade**. O trabalho parcial fica preservado na branch, não em stash (frágil, some de vista) nem em worktree (peso morto para uma fila que processa um PBI por vez) — mas isso **preserva o trabalho e evita perder contexto, não paraleliza**: o gate de PO (`guard_po_gate`) bloqueia a escrita de `.specgate/phase` enquanto ele estiver `aguardando-po`, então mesmo uma tentativa de seguir para o próximo PBI esbarra nesse mecanismo. A fila só volta a andar quando o PO responde e a fase é retomada.
 
 Retomar depois da resposta do PO: registre a decisão no gate (`status: "respondido"`, mesmo `opened_at_seq`) — o turno do PO já aconteceu, então a **janela de retomada da spec** (ver "Congelamento de spec" acima) já está aberta —, atualize a spec DAQUELE PBI com a decisão, e só então `git merge parked/NN-nome` de volta seguido de limpeza com **`git branch -d` minúsculo** (só apaga branch já mergeada). O `-D` maiúsculo é bloqueado pelo gate destrutivo, e **o bloqueio está correto nesse caso**: numa `parked/*` ainda não mergeada, `-D` descartaria de forma irreversível o trabalho que o estacionamento existe para preservar.
 
