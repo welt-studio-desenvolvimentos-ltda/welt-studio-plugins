@@ -1877,5 +1877,119 @@ class GatesLegadoTest(GuardBase):
         self.assertIn("Gate de regressão FALHOU", r.stderr)
 
 
+class TestingPhaseReadEscapeTest(GuardBase):
+    """I4 (achado da revisão final): guard_testing_phase bloqueava leitura de
+    source_paths só quando os candidatos batiam por igualdade direta de
+    caminho (file_path/path/pattern) ou quando o primeiro token de um
+    comando Bash era um nome de leitor conhecido (BASH_READ_CMDS). Isso
+    deixava furos casuais e muito naturais:
+
+    - Grep sem 'path' varre a árvore inteira a partir de cwd (mesmo
+      alcance de path=".", que já bloqueava) — a AUSÊNCIA do campo era lida
+      como "nada para checar".
+    - Glob com um pattern amplo ("**/*.py") nunca era comparado como
+      caminho de verdade: só a string do pattern inteira era testada
+      contra source_dirs, e "**/*.py" nunca bate com um diretório real.
+    - Leitura via interpretador inline (`python3 -c "open(...)"`) ou
+      heredoc escapava por completo: nem "python3" nem "sh" estão em
+      BASH_READ_CMDS, então o comando inteiro nunca era examinado.
+    - `git show HEAD:src/arquivo.py` lê conteúdo versionado sem tocar o
+      disco de trabalho: "git" não está em BASH_READ_CMDS.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "src"), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "tests"), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "docs"), exist_ok=True)
+        with open(os.path.join(self.tmp, "src", "somar.py"), "w", encoding="utf-8") as fh:
+            fh.write("def somar(a, b):\n    return a + b\n")
+        self.state("phase", "testing")
+
+    def _grep(self, tool_input):
+        payload = {"tool_name": "Grep", "tool_input": dict(tool_input), "cwd": self.tmp}
+        payload["tool_input"].setdefault("pattern", "SEGREDO")
+        return run_guard(payload, self.tmp)
+
+    def _glob(self, tool_input):
+        return run_guard(
+            {"tool_name": "Glob", "tool_input": dict(tool_input), "cwd": self.tmp}, self.tmp
+        )
+
+    def test_grep_sem_path_alcanca_source_e_e_bloqueado(self):
+        r = self._grep({})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Fase de testes black-box ativa", r.stderr)
+
+    def test_grep_com_path_ponto_continua_bloqueado(self):
+        # Não-regressão: o caso que já funcionava antes deste fix.
+        r = self._grep({"path": "."})
+        self.assertEqual(r.returncode, 2)
+
+    def test_grep_com_path_fora_de_source_continua_permitido(self):
+        r = self._grep({"path": "tests"})
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_grep_sem_path_sem_source_paths_configurado_nao_trava(self):
+        self.config({"test_command": "true", "source_paths": []})
+        r = self._grep({})
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_glob_pattern_amplo_alcanca_source_e_e_bloqueado(self):
+        r = self._glob({"pattern": "**/*.py"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Fase de testes black-box ativa", r.stderr)
+
+    def test_glob_pattern_restrito_a_src_e_bloqueado(self):
+        r = self._glob({"pattern": "src/**/*.py"})
+        self.assertEqual(r.returncode, 2)
+
+    def test_glob_pattern_restrito_a_tests_continua_permitido(self):
+        r = self._glob({"pattern": "tests/**/*.py"})
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_glob_com_path_fora_de_source_permitido_mesmo_com_pattern_amplo(self):
+        r = self._glob({"pattern": "**/*.py", "path": "docs"})
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_python_dash_c_lendo_source_e_bloqueado(self):
+        r = self.bash("python3 -c \"print(open('src/somar.py').read())\"")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Fase de testes black-box ativa", r.stderr)
+
+    def test_sh_dash_c_lendo_source_e_bloqueado(self):
+        r = self.bash('sh -c "cat src/somar.py"')
+        self.assertEqual(r.returncode, 2)
+
+    def test_heredoc_python_lendo_source_e_bloqueado(self):
+        r = self.bash("python3 <<'EOF'\nprint(open('src/somar.py').read())\nEOF\n")
+        self.assertEqual(r.returncode, 2)
+
+    def test_git_show_lendo_source_e_bloqueado(self):
+        r = self.bash("git show HEAD:src/somar.py")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Fase de testes black-box ativa", r.stderr)
+
+    def test_python_dash_c_sem_tocar_source_continua_permitido(self):
+        r = self.bash("python3 -c \"print('hello world')\"")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_leitura_de_specgate_json_continua_permitida(self):
+        r = run_guard({
+            "tool_name": "Read",
+            "tool_input": {"file_path": ".specgate.json"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0)
+
+    def test_leitura_de_docs_continua_permitida(self):
+        r = run_guard({
+            "tool_name": "Read",
+            "tool_input": {"file_path": "docs/plano.md"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

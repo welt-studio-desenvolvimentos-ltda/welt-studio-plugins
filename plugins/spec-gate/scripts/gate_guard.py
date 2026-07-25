@@ -97,6 +97,36 @@ _QUOTED_STRING_RE = re.compile(r"(['\"])(.*?)\1")
 # grupo com aspas (se houver) precisa casar dos dois lados (`\1` no fim)
 # para o fim do match ficar depois da aspa de fechamento, não no meio dela.
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+# I4 (achado da revisão final): prefixo literal de um pattern de Glob, antes
+# do primeiro caractere curinga. Usado só quando a chamada NÃO informa
+# 'path' — nesse caso o Glob varre a partir de cwd, e um pattern sem
+# restrição de diretório na frente ("**/*.py") alcança source_paths tanto
+# quanto path="." (que já era bloqueado). "tests/**/*.py" devolve "tests",
+# que não toca source_paths (passa, sem falso positivo).
+_GLOB_WILDCARD_RE = re.compile(r"[*?\[{]")
+
+
+def _glob_pattern_root(pattern):
+    m = _GLOB_WILDCARD_RE.search(pattern)
+    prefix = pattern[:m.start()] if m else pattern
+    prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+    return prefix or "."
+
+
+def _git_show_targets(tokens):
+    """Candidatos a caminho de `git show <rev>:<caminho>` — a forma de ler
+    conteúdo VERSIONADO sem tocar o arquivo de trabalho, que escapa de
+    BASH_READ_CMDS (que só reconhece leitores que operam sobre o arquivo em
+    disco, tipo cat/head/grep). Fricção, não parser de verdade: só cobre a
+    forma direta `git show <rev>:<caminho>`.
+    """
+    if not tokens or os.path.basename(tokens[0]) != "git":
+        return []
+    if len(tokens) < 2 or tokens[1] != "show":
+        return []
+    return [t.split(":", 1)[1] for t in tokens[2:] if not t.startswith("-") and ":" in t]
+
+
 PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
 SEQ_REL = os.path.join(".specgate", "seq")
@@ -277,6 +307,16 @@ def guard_testing_phase(tool, tool_input, cwd, cfg):
             tool_input.get("path"),
             tool_input.get("pattern") if tool == "Glob" else None,
         ]
+        # I4: 'path' AUSENTE (não vazio, ausente mesmo) significa que a
+        # busca parte de cwd inteiro — mesmo alcance de path="." (que já
+        # era bloqueado antes deste fix). Grep sem 'path' é o caminho mais
+        # natural de todos para ler source_paths sem disparar o guard.
+        if tool == "Grep" and "path" not in tool_input:
+            candidates.append(".")
+        if tool == "Glob" and "path" not in tool_input:
+            pattern = tool_input.get("pattern")
+            if isinstance(pattern, str):
+                candidates.append(_glob_pattern_root(pattern))
         for c in candidates:
             if isinstance(c, str) and touches_source(c, cwd, source_dirs):
                 block(reason.format(alvo=c))
@@ -291,14 +331,25 @@ def guard_testing_phase(tool, tool_input, cwd, cfg):
             tokens = cmd.split()
         if not tokens:
             return
-        has_reader = any(os.path.basename(t) in BASH_READ_CMDS for t in tokens)
-        if not has_reader:
-            return
-        for t in tokens[1:]:
-            if t.startswith("-"):
-                continue
-            if touches_source(t, cwd, source_dirs):
-                block(reason.format(alvo=t))
+
+        candidates = []
+        if any(os.path.basename(t) in BASH_READ_CMDS for t in tokens):
+            candidates.extend(t for t in tokens[1:] if not t.startswith("-"))
+        # `git show <rev>:<caminho>` lê conteúdo versionado sem tocar o
+        # arquivo de trabalho — "git" nunca está em BASH_READ_CMDS.
+        candidates.extend(_git_show_targets(tokens))
+        # Interpretador inline/heredoc (`python3 -c`, `sh -c`, heredoc):
+        # reusa a MESMA extração de write_targets em vez de duplicar o
+        # parsing — ela já devolve os candidatos de dentro do código
+        # (strings entre aspas, tokens soltos), independente de o uso ser
+        # leitura ou escrita (ver docstring de write_targets). Sem isto,
+        # `python3 -c "print(open('src/x.py').read())"` escapava por
+        # completo: nem "python3" está em BASH_READ_CMDS.
+        candidates.extend(write_targets(tool, tool_input))
+
+        for c in candidates:
+            if touches_source(c, cwd, source_dirs):
+                block(reason.format(alvo=c))
 
 
 def guard_destructive(tool_input, cwd, cfg):
