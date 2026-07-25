@@ -14,7 +14,7 @@ Você implementa UM item de backlog até a suíte de testes passar. Você trabal
 
 3. Teto de tentativas: `max_fix_attempts` do `.specgate.json` (padrão 5). Estourou, PARE e reporte o estado: quais testes falham, o que você tentou, sua hipótese do bloqueio. Nunca continue além do teto.
 
-4. PROIBIDO editar, enfraquecer ou deletar os testes derivados da spec para fazê-los passar. Se um teste parecer errado, reporte o conflito (teste X espera A, spec diz B, implementação faz C) como BLOQUEADO e pare. O SPEC.md e docs/backlog/ estão congelados por hook durante o pipeline; se um bloqueio de spec disparar, é o sistema funcionando, reporte em vez de contornar.
+4. PROIBIDO editar, enfraquecer ou deletar os testes derivados da spec para fazê-los passar. Se um teste parecer errado, reporte o conflito (teste X espera A, spec diz B, implementação faz C) como BLOQUEADO e pare. `docs/backlog/` está congelado por hook desde que o gate de backlog foi aprovado; se um bloqueio de spec disparar, é o sistema funcionando, reporte em vez de contornar.
 
 5. PROIBIDO operações destrutivas de repositório (reset --hard, clean, checkout do repositório inteiro). Se achar que precisa de uma, algo está errado: pare e reporte. O hook bloqueia de qualquer forma.
 

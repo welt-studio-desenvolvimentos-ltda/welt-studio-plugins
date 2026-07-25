@@ -1,10 +1,11 @@
 # spec-gate
 
-Plugin de Claude Code que destila as três ideias de governança que valem a pena do padrão "Scrum de agentes", sem as cerimônias:
+Plugin de Claude Code que destila as ideias de governança que valem a pena do padrão "Scrum de agentes", mantendo o PO gateado em pontos discretos em vez de interrompido difusamente:
 
-1. **Testes black-box**: um subagent escreve os testes lendo apenas o SPEC.md. Um hook bloqueia mecanicamente a leitura do código-fonte durante essa fase, então os testes não conseguem espelhar a implementação.
+1. **Testes black-box**: um subagent escreve os testes lendo apenas a spec do PBI (`docs/backlog/NN-nome.md`). Um hook bloqueia mecanicamente a leitura do código-fonte durante essa fase, então os testes não conseguem espelhar a implementação.
 2. **Término mecânico**: "pronto" só existe quando a suíte completa roda de verdade e passa, com teto de tentativas de correção. Um hook roda a suíte inteira em todo `git commit` e `git merge` e bloqueia se algo falhar.
-3. **Escalação obrigatória**: requisito ambíguo vira pergunta ao usuário, nunca código em cima de palpite. O testador devolve as ambiguidades da spec como perguntas, e o pipeline para até serem respondidas.
+3. **Escalação obrigatória**: requisito ambíguo vira pergunta ao PO, nunca código em cima de palpite. O testador devolve as ambiguidades da spec como perguntas, e o fluxo estaciona o PBI até serem respondidas.
+4. **Decisão de PO não se toma sozinho**: quatro gates mecânicos (backlog, testes, aceite, ambiguidade) param o fluxo inteiro e bloqueiam por hook qualquer tentativa de registrar uma decisão sem uma fala real do PO depois que o gate abriu.
 
 ## Instalação
 
@@ -32,6 +33,16 @@ O plugin fica completamente inerte até existir um `.specgate.json` na raiz do p
 
 O comando `/spec-gate` cria esse arquivo pra você na primeira vez, se ele ainda não existir.
 
+Chaves adicionais, todas opcionais (default entre parênteses):
+
+| Chave | Default | Para que serve |
+|---|---|---|
+| `spec_paths` | `["docs/backlog"]` | Diretórios que o congelamento de spec protege (ver "Congelamento de spec" abaixo). `SPEC.md` não faz mais parte do default — o fluxo atual não usa esse arquivo. |
+| `max_behaviors_per_pbi` | `7` | Limite de itens em **Comportamentos** de um PBI antes do gatilho de quebra obrigar uma proposta de split. Ver "Granularidade do backlog" abaixo — é **semi-mecânico**, não uma medição exata. |
+| `max_public_interfaces_per_pbi` | `1` | Mesmo gatilho, mas contando entradas em **Interfaces públicas**. |
+| `block_destructive` | `true` | Desliga o gate de operações destrutivas se definido como `false`. |
+| `project_name` | — | Nome exibido no dashboard e (opcionalmente) no painel do VS Code. |
+
 Adicione `.specgate/` ao `.gitignore` do projeto (é estado de runtime).
 
 ## Uso
@@ -44,7 +55,7 @@ Um único comando, auto-orientado: ele lê `.specgate/gate.json` e `.specgate/ba
 
 O fluxo tem seis fases, sempre pelo nome (nunca por número): **Concepção** (entrevista o PO e escreve os PBIs em `docs/backlog/`), **Refinamento** (caça ambiguidade e avalia granularidade), **Testes** (subagent `blackbox-tester` escreve os testes só a partir da spec, com leitura de `source_paths` bloqueada por hook), **Implementação** (até a suíte completa passar, com teto de tentativas), **Conformidade** (subagent `spec-reviewer` audita spec contra implementação em contexto isolado) e **Commit** (gate de regressão roda a suíte inteira antes de deixar passar).
 
-Três gates mecânicos pontuam esse fluxo — **gate de backlog** (aprova os PBIs antes de qualquer teste), **gate de testes** (aprova os testes como contrato antes da implementação começar) e **gate de aceite** (aprova a entrega antes do commit) — mais um quarto, o **gate de ambiguidade**, que abre sempre que um PBI é estacionado (branch `parked/NN-nome` com commit WIP) por não ter decisão do PO ainda, liberando o fluxo para seguir aos próximos itens da fila sem perder o trabalho parcial.
+Quatro gates de PO pontuam esse fluxo, cada um parando o fluxo inteiro até uma resposta real do PO — **gate de backlog** (aprova os PBIs antes de qualquer teste), **gate de testes** (aprova os testes como contrato antes da implementação começar), **gate de aceite** (aprova a entrega antes do commit) e **gate de ambiguidade**, que abre sempre que um PBI é estacionado (branch `parked/NN-nome` com commit WIP) por não ter decisão do PO ainda, liberando o fluxo para seguir aos próximos itens da fila sem perder o trabalho parcial. Distintos destes, os gates mecânicos (black-box, regressão, destrutivo) agem sozinhos, sem parar para o PO — ver "O caminho do PBI" abaixo para a distinção completa.
 
 ## Orquestração em sessão
 
@@ -92,17 +103,106 @@ mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas` na barra da sessão, e acresc
 
 Dentro da própria conversa, três elementos visuais: a todo list nativa do Claude Code (o orquestrador mantém um todo por item, marcando conforme a fila avança, renderizada pela UI com riscado e tudo), o quadro ANSI que o orquestrador imprime após cada item (barra de progresso, itens coloridos por status, seção de perguntas do PO, seção de gates do PO com a rodada corrente), e o comando `/spec-gate:board` para invocar o quadro a qualquer momento. O quadro é desenhado por `scripts/board.sh` lendo `batch.json` e `gate.json`, então funciona até fora do Claude Code, direto no seu terminal.
 
-## Como o bloqueio black-box funciona
+## O caminho do PBI
 
-Durante a Fase 1, o arquivo `.specgate/phase` contém `testing`. O hook PreToolUse intercepta Read, Grep, Glob e comandos Bash de leitura (cat, grep, sed etc.) e bloqueia qualquer alvo dentro de `source_paths`, devolvendo ao agente a instrução de registrar a lacuna da spec em vez de espiar o código. Fora da fase, nada é bloqueado.
+```
+você descreve o que quer
+         ▼
+FASE CONCEPÇÃO                          subagent: spec-analyst
+  entrevista interativa (uma pergunta fechada por vez)
+  → escreve docs/backlog/NN-nome.md
+         ▼
+FASE REFINAMENTO                        subagent: spec-analyst
+  · caça ambiguidade, contradição, lacuna
+  · avalia granularidade; gatilho SEMI-mecânico estourado
+    OBRIGA a propor quebra em PBIs menores
+         ▼
+    ⛔ GATE DE BACKLOG
+       responde as perguntas + aprova a quebra. Uma sentada.
+         ▼
+   ─────── daqui pra baixo, UM PBI DE CADA VEZ (em fila) ───────
+         ▼
+FASE TESTES BLACK-BOX                   subagent: blackbox-tester
+  🔒 leitura de source_paths BLOQUEADA
+         ▼
+    ⛔ GATE DE TESTES
+       os testes capturam o que você quis dizer?
+         ▼
+FASE IMPLEMENTAÇÃO                      subagent: implementer
+  🔒 spec congelada · 🔒 teto de max_fix_attempts
+         ▼
+FASE CONFORMIDADE                       subagent: spec-reviewer
+  auditoria adversarial em contexto limpo
+  REPROVADO volta pra Implementação
+         ▼
+    ⛔ GATE DE ACEITE
+       aceita ou rejeita a entrega
+         ▼
+FASE COMMIT
+  🔒 regressão: suíte completa roda e bloqueia se falhar
+         ▼
+   próximo PBI
 
-O gate de regressão intercepta `git commit` e `git merge`, roda o `test_command` no diretório do projeto e bloqueia com a saída da falha se a suíte quebrar.
+TRANSVERSAIS
+  🔒 destrutivo — reset --hard, rm -rf, push --force
+  ⛔ GATE DE AMBIGUIDADE — estaciona o PBI (trabalho PRESERVADO),
+     pergunta entra na fila, fluxo segue pro próximo PBI
+```
 
-O terceiro gate bloqueia operações destrutivas: `git reset --hard`, `git clean -f`, `git push --force` (o `--force-with-lease` passa), `git branch -D`, `git checkout .`, `git restore .` e `rm -rf`. A mensagem de bloqueio instrui o agente a explicar ao usuário o que seria perdido e pedir confirmação explícita; confirmado, o agente cria `.specgate/allow-destructive` e reexecuta, e a liberação é consumida em uma única execução. Checkout ou restore de arquivos específicos não são bloqueados, só as formas que varrem o repositório inteiro. Desativável com `"block_destructive": false` no `.specgate.json`.
+Dois tipos de gate coexistem, e não têm o mesmo comportamento:
 
-O quarto gate é o congelamento da spec: enquanto qualquer fase do pipeline estiver ativa (`.specgate/phase` não vazio), o `SPEC.md` e `docs/backlog/` ficam somente-leitura para o agente, bloqueando Edit, Write e escritas via Bash (sed -i, tee, redirecionamento, mv/cp/rm). A spec é o contrato que julga o trabalho; quem está sendo julgado não pode alterá-la. Se o agente concluir que a spec está errada, a única saída é parar e apresentar o caso ao usuário. Fora do pipeline, a spec edita normalmente. Caminhos configuráveis via `"spec_paths"` no `.specgate.json` (padrão: `["SPEC.md", "docs/backlog"]`).
+| | O que é | Comportamento |
+|---|---|---|
+| 🔒 **Mecânico** | Black-box, regressão, destrutivo | Automático, não pergunta nada — só bloqueia ou libera sozinho |
+| ⛔ **De PO** | Backlog, testes, aceite, ambiguidade | Para o fluxo inteiro e espera uma resposta real do PO |
 
-Os dois gates falham abertos: qualquer erro interno do script resulta em permitir a ação, para nunca travar sua sessão.
+## Granularidade do backlog: o gatilho de quebra
+
+Na fase Refinamento, o `spec-analyst` compara cada PBI contra `max_behaviors_per_pbi` (padrão 7, contando itens de **Comportamentos**) e `max_public_interfaces_per_pbi` (padrão 1, contando **Interfaces públicas**). Ultrapassar qualquer um dos dois torna a proposta de quebra em PBIs menores obrigatória, não uma sugestão.
+
+**Ressalva honesta:** este gatilho é ⛔ **semi-mecânico**, não 🔒. A comparação contra o limite é mecânica — um número contra outro número. A **contagem em si é julgamento do modelo**: como um comportamento é redigido (um item que esconde três decisões, ou três itens que poderiam ser um só) muda o resultado. Não é uma medição exata, e o README não vende como tal. O relatório do `spec-analyst` inclui os números usados, para o PO poder discordar da contagem e não só da conclusão.
+
+## Estado em `.specgate/`
+
+Todo arquivo abaixo é gitignored — é estado de runtime, não histórico versionado.
+
+| Arquivo | Conteúdo | Guard que protege |
+|---|---|---|
+| `phase` | Fase ativa (`testing`, `implementing`, ou vazio) | `guard_po_gate` bloqueia a escrita enquanto houver qualquer gate `aguardando-po` |
+| `gate.json` | Array de gates (mecânicos de PO), cada um com `checkpoint`, `pbi`, `rodada`, `status`, `opened_at_seq`, `questions` | `guard_gate_clear` valida toda escrita chave a chave: gate decidido é imutável, deleção de gate aberto é bloqueada, abertura de rodada nova exige a rodada anterior reprovada/respondida |
+| `batch.json` | Fila de PBIs do lote, com `backlog_aprovado` e status/tentativas/commit por item | `guard_batch_lock` bloqueia desligar `backlog_aprovado` depois que ele já está `true` |
+| `seq` | Contador monotônico de turnos do PO, incrementado só por `log_event.py` no evento `UserPromptSubmit` | `guard_seq_lock` bloqueia qualquer escrita do agente nele, sempre |
+| `events.jsonl` | Log de eventos da sessão (hooks, subagents), consumido pelo painel do VS Code | sem guard dedicado — é log, não estado que gate valida |
+
+## Como os guards mecânicos funcionam
+
+**Black-box.** Enquanto `.specgate/phase` contém `testing`, o hook PreToolUse intercepta Read, Grep, Glob e comandos Bash de leitura (cat, grep, sed etc.) e bloqueia qualquer alvo dentro de `source_paths`, devolvendo ao agente a instrução de registrar a lacuna da spec em vez de espiar o código. Fora da fase, nada é bloqueado.
+
+**Regressão.** Intercepta `git commit` e `git merge`, roda o `test_command` no diretório do projeto e bloqueia com a saída da falha se a suíte quebrar. **Exceção:** commits numa branch `parked/*` não rodam a suíte — um PBI estacionado tem trabalho incompleto por definição (ver "Estacionamento" abaixo), e sem esta exceção o commit WIP que preserva esse trabalho seria bloqueado pelo próprio gate.
+
+**Destrutivo.** Bloqueia `git reset --hard`, `git clean -f`, `git push --force` (o `--force-with-lease` passa), `git branch -D`, `git checkout .`, `git restore .` e `rm -rf`. A mensagem de bloqueio instrui o agente a explicar ao PO o que seria perdido e pedir confirmação explícita; confirmado, o agente cria `.specgate/allow-destructive` e reexecuta, e a liberação é consumida em uma única execução. Checkout ou restore de arquivos específicos não são bloqueados, só as formas que varrem o repositório inteiro. Desativável com `"block_destructive": false` no `.specgate.json`. **`git branch -d` minúsculo (limpeza de uma `parked/*` já mergeada) passa livre — só o `-D` maiúsculo é bloqueado, e nesse caso o bloqueio está correto: `-D` numa `parked/*` não mergeada descartaria exatamente o trabalho que o estacionamento existe para preservar.**
+
+**Congelamento de spec.** A partir do momento em que o **gate de backlog** é aprovado (fato registrado em `.specgate/batch.json`, campo `backlog_aprovado: true` — antes disso o `spec-analyst` ainda está escrevendo as specs nas fases Concepção e Refinamento e precisa de acesso), `docs/backlog/` fica somente-leitura para o agente: Edit, Write e escritas via Bash (sed -i, tee, redirecionamento, mv/cp/rm) são bloqueadas. A spec é o contrato que julga o trabalho; quem está sendo julgado não pode alterá-la. Se o agente concluir que a spec está errada, a única saída é parar e apresentar o caso ao PO. Caminhos configuráveis via `spec_paths` (padrão `["docs/backlog"]`).
+
+**Gate de PO (`guard_po_gate`).** Chokepoint: toda transição de fase passa por uma escrita em `.specgate/phase`. Com qualquer gate `aguardando-po` em `gate.json`, essa escrita é bloqueada — mesmo que o gate pendente seja de um PBI diferente do que se quer tocar agora.
+
+**Validação do gate (`guard_gate_clear`).** Intercepta escritas em `.specgate/gate.json` e valida gate a gate: nenhum é marcado como decidido sem um turno do PO (`seq` atual maior que o `opened_at_seq` registrado na abertura); um gate já decidido é registro imutável; apagar um gate aberto é bloqueado ("apagar não é decidir"); abrir a rodada seguinte de uma série `(checkpoint, pbi)` só é aceito se a rodada anterior estiver registrada com um status que legitima rodada nova (`reprovado` para backlog/testes/aceite, `respondido` para ambiguidade) e com o número exatamente `anterior + 1`. Conteúdo que a escrita não expõe (Edit, ou Bash como `rm`/`truncate`/redirecionamento) cai numa regra conservadora que bloqueia sempre que houver gate aberto.
+
+**Trava do `seq` (`guard_seq_lock`) e trava do `batch` (`guard_batch_lock`).** A primeira bloqueia qualquer escrita do agente reconhecida em `.specgate/seq`, sempre — é o contador que prova que o PO falou. A segunda bloqueia só a escrita que desligaria `backlog_aprovado` depois que ele já está `true`, o que reabriria `docs/backlog/` para edição sem decisão nenhuma do PO.
+
+Todos os guards falham abertos: qualquer erro interno do script resulta em permitir a ação, para nunca travar a sessão.
+
+### A honestidade sobre o que esses guards são
+
+Nenhum estado em arquivo é uma barreira real contra o Bash do próprio agente — formas contorcidas (`dd`, `eval`, heredoc, indireção por variável, `awk 'BEGIN{print > arq}'`) contornam qualquer parsing de comando. Todo guard acima é **fricção**, de altura variável, que encarece o desvio CASUAL — a ameaça real, um modelo racionalizando um atalho — e não pretende ser (nem se vende como) uma sandbox contra um adversário decidido.
+
+A única propriedade genuinamente dura é diferente: o Claude **não fabrica um evento `UserPromptSubmit`**. O contador `.specgate/seq` só avança dentro de `log_event.py`, rodando como hook nesse evento — nunca como tool call do agente. Por isso o caminho honesto (esperar o PO falar) é sempre o de **menor resistência**; forjar exige Bash cada vez mais exótico, que um atalho casual não alcança. É nisso, e só nisso, que o gate de PO se apoia como garantia de verdade; o resto encarece o desvio acidental.
+
+## Estacionamento
+
+Quando uma fase encontra ambiguidade que o PO ainda não decidiu, o PBI é estacionado em vez de travar o fluxo inteiro nele: `git checkout -b parked/NN-nome`, commit WIP (`git commit`, suíte pode estar vermelha — exceção do gate de regressão acima), volta pra branch principal com a árvore limpa, abre o **gate de ambiguidade**, e o fluxo segue para o próximo PBI da fila. O trabalho parcial fica preservado na branch, não em stash (frágil, some de vista) nem em worktree (peso morto para uma fila que processa um PBI por vez).
+
+Retomar depois da resposta do PO é um merge de volta (`git merge parked/NN-nome`) seguido de limpeza com **`git branch -d` minúsculo** (só apaga branch já mergeada). O `-D` maiúsculo é bloqueado pelo gate destrutivo, e **o bloqueio está correto nesse caso**: numa `parked/*` ainda não mergeada, `-D` descartaria de forma irreversível o trabalho que o estacionamento existe para preservar.
 
 ## Notas de design validadas contra a doc oficial
 
@@ -112,6 +212,9 @@ Os dois gates falham abertos: qualquer erro interno do script resulta em permiti
 
 ## Limites conhecidos
 
-- O bloqueio de leitura via Bash é baseado em parsing do comando; um agente determinado a burlar conseguiria (ex.: python -c). O objetivo é impedir o desvio acidental e barato, que é o caso real, não construir uma sandbox.
+- Todo bloqueio via parsing de comando Bash é fricção, não parser de shell de verdade: um agente disposto a burlar de propósito consegue (`python -c`, `eval`, `base64 | sh`, indireção por variável). O objetivo é encarecer o desvio acidental e barato, que é o caso real — não construir uma sandbox.
 - O gate de regressão roda a suíte de forma síncrona dentro do hook; em suítes muito lentas, ajuste `test_timeout_seconds` ou aponte `test_command` para um subconjunto rápido e deixe a suíte completa para o CI.
+- O gate de PO não lê a semântica da fala do PO: com dois gates abertos ao mesmo tempo, um turno que responde só um deles satisfaz a checagem mecânica dos dois igualmente. Distinguir qual gate a mensagem endereça é instrução do comando `/spec-gate` mais honestidade do modelo, não mecânica de hook.
+- O gatilho de granularidade (`max_behaviors_per_pbi`, `max_public_interfaces_per_pbi`) dispara mecanicamente contra o limite, mas a contagem que alimenta essa comparação é julgamento do `spec-analyst`, não uma medição exata.
+- Não há mais modo headless: um gate que exige turno humano real não tem como funcionar sem uma sessão com um humano do outro lado.
 - Testado com a estrutura de plugins do Claude Code atual (hooks/hooks.json com ${CLAUDE_PLUGIN_ROOT}); confira a versão mínima do seu Claude Code se os hooks não dispararem.

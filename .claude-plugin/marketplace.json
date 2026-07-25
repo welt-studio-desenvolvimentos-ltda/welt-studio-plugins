@@ -30,8 +30,8 @@
     {
       "name": "spec-gate",
       "source": "./plugins/spec-gate",
-      "description": "Pipeline spec-first com testes black-box, gates mecânicos de commit e regras de escalação obrigatória.",
-      "version": "0.1.0"
+      "description": "Fluxo spec-first único, gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome e quatro gates de decisão humana (backlog, testes, aceite, ambiguidade) sobre os gates mecânicos de black-box, regressão e operações destrutivas.",
+      "version": "0.2.0"
     }
   ]
 }
