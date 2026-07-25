@@ -99,29 +99,48 @@ Ele lê o estado do disco e te diz onde parou e o que está pendente. Você nunc
 
 ## Acompanhando o progresso
 
-Três formas, todas opcionais:
+### 📊 O board no navegador
 
-**No terminal** — o quadro do lote, colorido por status:
-
-```
-/spec-gate:board
-```
-
-**Na barra do Claude Code** — adicione ao `.claude/settings.json` do projeto:
-
-```json
-{"statusLine": {"type": "command", "command": "bash <plugin-dir>/scripts/statusline.sh"}}
-```
-
-Mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas`.
-
-**No navegador** — um board estilo Kanban que atualiza sozinho:
+Um painel estilo Kanban que se atualiza sozinho a cada 2 segundos, sem você precisar recarregar nada:
 
 ```bash
 <plugin-dir>/scripts/dashboard.sh /caminho/do/projeto
 ```
 
-> `<plugin-dir>` é onde o plugin foi instalado. Há também uma extensão de VS Code em [`vscode-spec-gate-board/`](../../vscode-spec-gate-board/) que faz isso num painel dockável.
+Sobe um servidor local (porta 8437, só em `127.0.0.1`) e abre o navegador — no WSL2 abre no Windows automaticamente. O que você vê:
+
+- **Barra de progresso** do lote inteiro
+- **Cada PBI** com status colorido: `pending`, `running`, `delivered`, `skipped`, `failed` — mais tentativas e hash do commit
+- **🛑 Gates aguardando você**, com o PBI e a rodada atual
+- **❓ Perguntas acumuladas**, prontas para você responder de uma vez
+
+Deixe aberto num segundo monitor e você acompanha o lote inteiro sem tocar no terminal.
+
+> Adicione `.specgate-dashboard.html` ao `.gitignore` junto com `.specgate/`.
+
+**No VS Code**, a mesma coisa num painel dockável ao lado do editor, sem servidor: a extensão em [`vscode-spec-gate-board/`](../../vscode-spec-gate-board/).
+
+### No terminal
+
+O mesmo quadro, em ANSI, direto na conversa:
+
+```
+/spec-gate:board
+```
+
+Funciona até fora do Claude Code — é só um script lendo o estado.
+
+### Na barra do Claude Code
+
+Uma linha de resumo permanente. No `.claude/settings.json` do projeto:
+
+```json
+{"statusLine": {"type": "command", "command": "bash <plugin-dir>/scripts/statusline.sh"}}
+```
+
+Mostra `spec-gate 3/7 ok · 1 pulados · 0 falhas`, e acrescenta `· 1 gate(s) aberto(s)` quando algo espera por você.
+
+> `<plugin-dir>` é a pasta onde o plugin foi instalado.
 
 ---
 
