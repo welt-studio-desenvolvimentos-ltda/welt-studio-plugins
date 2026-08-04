@@ -1,14 +1,31 @@
 #!/usr/bin/env python3
 """spec-gate PreToolUse guard.
 
-Dois gates mecânicos, ambos inertes a menos que o projeto tenha .specgate.json:
+Gates mecânicos, todos inertes a menos que o projeto tenha .specgate.json.
+Os dois que cercam o ciclo de teste — um em cada ponta, e nenhum deles
+autodeclarável, porque quem executa a suíte é o hook e não o agente:
 
-1. Fase de testes (arquivo .specgate/phase contém "testing"):
-   bloqueia leitura de código-fonte (source_paths) por Read, Grep, Glob
-   e por comandos Bash que inspecionam arquivos. Garante o black-box.
+1. Prova de RED (`guard_red_evidence`): a suíte precisa estar VERMELHA na
+   transição para a fase de implementação. Testes que já passam não
+   capturam o comportamento da spec.
 
-2. Gate de regressão: intercepta `git commit` e `git merge` no Bash,
-   roda o test_command configurado e bloqueia se a suíte falhar.
+2. Gate de regressão (`guard_regression`): intercepta `git commit` e
+   `git merge`, roda o test_command e bloqueia se a suíte falhar.
+
+E os que cercam o trabalho entre eles:
+
+3. Fase de testes (`.specgate/phase` começa com "testing"): bloqueia
+   leitura de código-fonte (source_paths) por Read, Grep, Glob e por
+   comandos Bash que inspecionam arquivos. Garante o black-box.
+
+4. Teto de tentativas (`guard_attempts`): conta as execuções da suíte
+   durante a implementação e bloqueia edição de código-fonte no estouro.
+
+5. Estado do fluxo: chokepoint de gate de PO, contador de turnos,
+   congelamento da spec, batch.json, os arquivos que só o hook escreve
+   (`guard_hook_state_lock`: red.json e attempts.json — sem ele os dois
+   mecanismos acima voltam a ser autodeclaráveis) e bloqueio de operações
+   destrutivas.
 
 Protocolo de hook do Claude Code: JSON no stdin; exit 0 permite,
 exit 2 bloqueia e envia o stderr de volta ao Claude como feedback.
@@ -133,6 +150,8 @@ PHASE_REL = os.path.join(".specgate", "phase")
 GATE_REL = os.path.join(".specgate", "gate.json")
 SEQ_REL = os.path.join(".specgate", "seq")
 BATCH_REL = os.path.join(".specgate", "batch.json")
+RED_REL = os.path.join(".specgate", "red.json")
+ATTEMPTS_REL = os.path.join(".specgate", "attempts.json")
 
 # Amarra 2 do mecanismo de rodada (Task 9): quais status DECIDIDOS de uma
 # rodada anterior legitimam abrir a rodada seguinte da mesma série
@@ -147,6 +166,13 @@ BATCH_REL = os.path.join(".specgate", "batch.json")
 # da primeira ambiguidade respondida. 'aprovado' fica de fora de propósito:
 # um PBI aprovado não está "brigando", não há o que legitimar de novo.
 STATUSES_THAT_LEGITIMIZE_ROUND = ("reprovado", "respondido")
+
+# Checkpoints cuja decisão do PO É, ela própria, uma mudança no contrato —
+# e por isso os únicos que abrem a janela estreita de escrita da spec (ver
+# `_spec_resume_window_open`). 'ambiguidade' resolve o que a spec não dizia;
+# 'emenda' muda o que ela dizia, num PBI já entregue. Nenhum outro checkpoint
+# reescreve requisito ao ser decidido, então nenhum outro precisa da janela.
+SPEC_WINDOW_CHECKPOINTS = ("ambiguidade", "emenda")
 
 
 def _spec_resume_window_open(cwd, candidate):
@@ -173,20 +199,34 @@ def _spec_resume_window_open(cwd, candidate):
     rodada, via `gates_vigentes` — o mesmo seletor usado pelo board, pelo
     dashboard e pela statusline) de uma série (checkpoint, pbi):
 
-    1. `checkpoint == "ambiguidade"` — nenhum outro checkpoint decide com
-       o vocabulário "respondido", e esta janela não é uma chave mestra
-       para gates decididos em geral (backlog/testes/aceite continuam sem
-       nenhuma exceção ao congelamento).
+    1. `checkpoint` é `ambiguidade` ou `emenda` — os dois únicos que decidem
+       com o vocabulário "respondido", e os dois únicos em que a decisão do
+       PO É uma mudança no contrato: na ambiguidade ele resolve o que a spec
+       não dizia; na emenda ele muda o que ela dizia, num PBI já entregue
+       (0.3.0). Esta janela não é uma chave mestra para gates decididos em
+       geral — backlog/testes/aceite/RED continuam sem nenhuma exceção ao
+       congelamento, porque a decisão deles não reescreve requisito nenhum.
     2. `status == "respondido"` — o PO decidiu a ambiguidade.
     3. `has_human_turn_since(cwd, opened_at_seq)` — um turno REAL do PO
        aconteceu depois que este gate abriu. Esta é a mesma checagem que
        `guard_gate_clear` usa para aceitar qualquer decisão de gate; não
        há checagem nova para burlar aqui.
-    4. `current_phase(cwd) == ""` — o retomada ainda não reativou a fase
-       (a seção 7 do comando desativa a fase ANTES de abrir o gate de
-       ambiguidade, e só a reativa DEPOIS do merge de volta). Assim que a
-       fase avança de novo, a janela fecha, mesmo que o gate continue
-       "respondido" — "fecha quando a fase avança".
+    4. A fase corrente não é a DESTE PBI — o retomada ainda não reativou a
+       fase dele (a seção 7 do comando desativa a fase ANTES de abrir o gate
+       de ambiguidade, e só a reativa DEPOIS do merge de volta). Assim que a
+       fase deste PBI avança de novo, a janela fecha, mesmo que o gate
+       continue "respondido" — "fecha quando a fase avança".
+
+       A comparação é POR PBI desde 0.3.0, pelo mesmo motivo que o chokepoint
+       de `guard_po_gate` passou a ser: com a fila andando enquanto um PBI
+       está estacionado, a fase corrente quase sempre é de OUTRO item, e
+       exigir a fase globalmente vazia deixaria a janela fechada justamente
+       no cenário que a versão nova existe para permitir — o PO responde a
+       ambiguidade do PBI-03 e o analista não consegue transcrever a decisão
+       porque o PBI-04 está em implementação. Fase sem PBI declarado
+       (`testing`, que é do lote inteiro, ou formato antigo) continua
+       fechando a janela para todo mundo: não dá para dizer de quem ela é, e
+       ignorância cai no lado conservador, como no resto do arquivo.
     5. `candidate` é EXATAMENTE o arquivo do campo `pbi` do gate (via
        `_same_file`, comparação de caminho resolvido) — nunca o diretório
        `docs/backlog/` inteiro, nunca a spec de outro PBI. Janela do
@@ -201,16 +241,19 @@ def _spec_resume_window_open(cwd, candidate):
     """
     if not candidate:
         return False
-    if current_phase(cwd) != "":
-        return False
+    phase, phase_pbi = parse_phase(current_phase(cwd))
+    if phase and not phase_pbi:
+        return False  # fase ativa sem dono declarado: fecha para todo mundo
     for g in _safe_current_gates(cwd):
-        if g.get("checkpoint") != "ambiguidade" or g.get("status") != "respondido":
+        if g.get("checkpoint") not in SPEC_WINDOW_CHECKPOINTS or g.get("status") != "respondido":
             continue
         pbi = g.get("pbi")
         if not isinstance(pbi, str) or not pbi:
             continue
         if not _same_file(candidate, cwd, pbi):
             continue
+        if phase and _same_file(phase_pbi, cwd, pbi):
+            continue  # a fase DESTE PBI já avançou: a janela dele fechou
         if _safe_has_human_turn(cwd, g.get("opened_at_seq", 0)):
             return True
     return False
@@ -262,12 +305,38 @@ def load_config(cwd):
 
 
 def current_phase(cwd):
+    """Conteúdo bruto de .specgate/phase ("" se ausente).
+
+    Continua devolvendo a STRING crua, e não a tupla de `parse_phase`, porque
+    quem só precisa saber "a fase está vazia?" (a janela de escrita da spec,
+    em `_spec_resume_window_open`) não deve ter que saber o formato interno.
+    """
     path = os.path.join(cwd, ".specgate", "phase")
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""
+
+
+def parse_phase(raw):
+    """`<fase>:<pbi>` -> ("fase", "pbi"). Sem sufixo -> ("fase", "").
+
+    O sufixo é o CAMINHO da spec do PBI, o mesmo identificador do campo `pbi`
+    dos gates (`docs/backlog/02-nome.md`) — não um slug traduzido. Usar a
+    mesma chave dos dois lados é o que permite casar a fase corrente com o
+    gate correspondente sem nenhuma tradução no meio, que seria mais uma
+    convenção para as duas pontas divergirem.
+
+    Formato antigo (só a fase, sem sufixo) continua válido e devolve pbi "".
+    Nesse caso os mecanismos que precisam do PBI — contador de tentativas e
+    prova de RED — ficam inertes, em vez de contar contra o PBI errado.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return "", ""
+    phase, _, pbi = raw.partition(":")
+    return phase.strip(), pbi.strip()
 
 
 def norm_paths(cwd, raw_paths):
@@ -289,6 +358,18 @@ def touches_source(candidate, cwd, source_dirs):
 def block(msg):
     sys.stderr.write(msg)
     sys.exit(2)
+
+
+# Avisos não-bloqueantes acumulados durante os guards e emitidos por main()
+# no fim, em stdout + exit 0 (o canal que o Claude Code lê como mensagem de
+# sistema). Acumular em vez de imprimir na hora preserva a ordem dos guards:
+# um aviso no meio não pode encurtar a passagem pelos guards seguintes, que
+# ainda podem BLOQUEAR a mesma chamada.
+_NOTICES = []
+
+
+def notice(msg):
+    _NOTICES.append(msg)
 
 
 def guard_testing_phase(tool, tool_input, cwd, cfg):
@@ -436,6 +517,55 @@ def _tail_file(fh, n):
     return fh.read().decode("utf-8", errors="replace")
 
 
+class _SuiteTimeout(Exception):
+    """A suíte estourou `test_timeout_seconds` e o grupo de processos foi morto."""
+
+
+def _run_suite(cwd, test_command, timeout):
+    """Roda o test_command e devolve (returncode, rabo do stdout, rabo do stderr).
+
+    Compartilhado pelos dois guards que precisam do veredito real da suíte —
+    o de regressão (antes do commit) e o de RED (antes da implementação) —
+    para que ambos herdem as mesmas garantias de execução, em vez de uma
+    segunda cópia deste subprocess divergir com o tempo:
+
+    `start_new_session=True` faz de proc.pid o líder de um GRUPO DE PROCESSOS
+    novo. Sem isto (o bug relatado), subprocess.run(timeout=...) mata só o
+    processo do /bin/sh no TimeoutExpired — um filho que o test_command tenha
+    backgroundeado (ou a própria suíte travada, se ela por sua vez tiver
+    filhos) sobrevive como ÓRFÃO, continua rodando e consome recursos
+    indefinidamente; tentativas repetidas empilhavam cópias da suíte travada.
+
+    A saída vai para arquivos temporários binários (não `capture_output=True`,
+    que bufferizaria TUDO em RAM) e só o rabo é lido de volta via `seek`.
+
+    Levanta `_SuiteTimeout` no estouro de tempo; MemoryError/OSError sobem
+    para quem chamou decidir a mensagem — nenhum dos dois vira "está tudo bem".
+    """
+    with tempfile.TemporaryFile() as out_fh, tempfile.TemporaryFile() as err_fh:
+        proc = subprocess.Popen(
+            test_command, shell=True, cwd=cwd,
+            stdout=out_fh, stderr=err_fh, start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Mata o GRUPO INTEIRO (não só proc.pid) — killpg alcança
+            # qualquer processo que o test_command tenha backgroundeado
+            # dentro do mesmo grupo, não só o shell direto.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # já morreu sozinho entre o timeout estourar e aqui
+            proc.wait()  # reaproveita o processo (evita zumbi); já está morto, não bloqueia
+            raise _SuiteTimeout()
+        return (
+            proc.returncode,
+            _tail_file(out_fh, TAIL_STDOUT_CHARS),
+            _tail_file(err_fh, TAIL_STDERR_CHARS),
+        )
+
+
 def guard_regression(tool_input, cwd, cfg):
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or not COMMIT_RE.search(cmd):
@@ -468,59 +598,17 @@ def guard_regression(tool_input, cwd, cfg):
     # verificar" não é o mesmo veredito que "verifiquei e está tudo bem", e
     # só o segundo libera o commit — por isso qualquer falha em EXECUTAR o
     # test_command (estouro de memória, fork falhando, disco cheio) vira
-    # BLOQUEIO, nunca liberação. `block()` levanta SystemExit, que o
-    # `except SystemExit: raise` de main() reergue sem engolir — é esse
-    # reerguimento, e não um `except Exception` mais permissivo aqui
-    # embaixo, que impede o bug relatado (MemoryError escapando até o
-    # `except Exception: sys.exit(0)` de main() e liberando o commit com a
-    # suíte vermelha).
+    # BLOQUEIO, nunca liberação.
     #
-    # A saída do processo vai para arquivos temporários binários (não
-    # `capture_output=True`, que bufferiza TUDO em RAM) e só o rabo
-    # (TAIL_STDOUT_CHARS/TAIL_STDERR_CHARS) é lido de volta via `seek` — o
-    # uso real nunca foi mais que isso.
+    # Os `block()` ficam FORA do try de propósito: `block()` levanta
+    # SystemExit, e um `except Exception` mais permissivo aqui embaixo (ou um
+    # except que esquecesse de reerguer SystemExit) reproduziria o bug
+    # relatado — MemoryError escapando até o `except Exception: sys.exit(0)`
+    # de main() e liberando o commit com a suíte vermelha.
     try:
-        with tempfile.TemporaryFile() as out_fh, tempfile.TemporaryFile() as err_fh:
-            # I6 (achado da revisão final): `start_new_session=True` faz de
-            # proc.pid o líder de um GRUPO DE PROCESSOS novo. Sem isto (o bug
-            # relatado), subprocess.run(timeout=...) mata só o processo do
-            # /bin/sh no TimeoutExpired — um filho que o test_command tenha
-            # backgroundeado (ou a própria suíte travada, se ela por sua vez
-            # tiver filhos) sobrevive como ÓRFÃO, continua rodando e consome
-            # recursos indefinidamente; tentativas repetidas de commit
-            # empilhavam cópias da suíte travada.
-            proc = subprocess.Popen(
-                test_command, shell=True, cwd=cwd,
-                stdout=out_fh, stderr=err_fh, start_new_session=True,
-            )
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                # Mata o GRUPO INTEIRO (não só proc.pid) — killpg alcança
-                # qualquer processo que o test_command tenha backgroundeado
-                # dentro do mesmo grupo, não só o shell direto.
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # já morreu sozinho entre o timeout estourar e aqui
-                proc.wait()  # reaproveita o processo (evita zumbi); já está morto, não bloqueia
-                block(
-                    "[spec-gate] Gate de regressão: a suíte de testes excedeu o tempo "
-                    f"limite de {timeout}s. Commit bloqueado. Investigue antes de commitar."
-                )
-                return
-            if proc.returncode != 0:
-                tail_out = _tail_file(out_fh, TAIL_STDOUT_CHARS)
-                tail_err = _tail_file(err_fh, TAIL_STDERR_CHARS)
-                block(
-                    "[spec-gate] Gate de regressão FALHOU. Commit/merge bloqueado até a "
-                    f"suíte completa passar.\nComando: {test_command}\n"
-                    f"--- saída (final) ---\n{tail_out}\n{tail_err}\n"
-                    "Corrija as falhas ou, se estiver travado após várias tentativas, "
-                    "pare e reporte ao usuário em vez de insistir."
-                )
-    except SystemExit:
-        raise
+        returncode, tail_out, tail_err = _run_suite(cwd, test_command, timeout)
+    except _SuiteTimeout:
+        returncode, tail_out, tail_err = None, "", ""
     except (MemoryError, OSError) as exc:
         block(
             "[spec-gate] Gate de regressão: a suíte de testes NÃO PÔDE SER "
@@ -529,6 +617,21 @@ def guard_regression(tool_input, cwd, cfg):
             "estar tudo bem. Investigue o ambiente de execução (memória, disco, "
             "processo) antes de tentar de novo; este bloqueio não é por suíte "
             "vermelha, é por não ter sido possível rodá-la."
+        )
+        return
+    if returncode is None:
+        block(
+            "[spec-gate] Gate de regressão: a suíte de testes excedeu o tempo "
+            f"limite de {timeout}s. Commit bloqueado. Investigue antes de commitar."
+        )
+        return
+    if returncode != 0:
+        block(
+            "[spec-gate] Gate de regressão FALHOU. Commit/merge bloqueado até a "
+            f"suíte completa passar.\nComando: {test_command}\n"
+            f"--- saída (final) ---\n{tail_out}\n{tail_err}\n"
+            "Corrija as falhas ou, se estiver travado após várias tentativas, "
+            "pare e reporte ao usuário em vez de insistir."
         )
 
 
@@ -972,6 +1075,482 @@ def _safe_gate_po_1_passed(cwd):
         return False
 
 
+def _safe_state_call(default, fn_name, *args):
+    """Wrapper fail-open genérico sobre uma função de `specgate_state`.
+
+    Mesmo raciocínio dos wrappers acima (módulo ausente porque o import
+    falhou, ou presente mas desatualizado/parcial): nenhum problema de estado
+    pode derrubar um hook bloqueante. Os mecanismos de RED e de tentativas
+    nasceram depois destes wrappers e usam este caminho genérico em vez de
+    somar mais cinco funções `_safe_*` idênticas — o default seguro vem de
+    quem chama, porque ele muda por chamada (False para "já provado", 0 para
+    contadores).
+    """
+    if specgate_state is None:
+        return default
+    try:
+        return getattr(specgate_state, fn_name)(*args)
+    except Exception:
+        return default
+
+
+# Intenção de transição para a fase de implementação, extraída do conteúdo
+# que a chamada pretende gravar em .specgate/phase. O grupo opcional captura
+# o PBI do formato `implementing:docs/backlog/02-nome.md` (ver `parse_phase`).
+_IMPLEMENTING_INTENT_RE = re.compile(r"\bimplementing\b(?::([^\s'\"]+))?")
+
+
+def _intended_implementing_pbi(tool, tool_input):
+    """PBI da transição para `implementing` que esta chamada pretende gravar —
+    ou None se ela não é uma transição para implementação.
+
+    "" (string vazia) é um retorno DIFERENTE de None: significa "é uma
+    transição para implementing, mas sem PBI declarado no formato novo".
+
+    LIMITE HONESTO, na mesma linha do resto do arquivo: para Write e Edit o
+    conteúdo pretendido está no payload e a leitura é exata. Para Bash não
+    existe conteúdo a inspecionar sem interpretar o shell de verdade, então a
+    busca acontece sobre o COMANDO INTEIRO — o que produz falso positivo
+    (`printf '' > .specgate/phase && echo implementing`) e escapa de quem
+    esconde a string (variável, base64, montagem por concatenação). Falso
+    positivo custa uma execução da suíte e uma mensagem; o escape é o mesmo
+    que vale para todos os guards por parsing: isto é fricção, não sandbox.
+    """
+    if tool == "Write":
+        raw = tool_input.get("content")
+    elif tool == "Edit":
+        raw = tool_input.get("new_string")
+    elif tool == "Bash":
+        raw = tool_input.get("command")
+    else:
+        return None
+    if not isinstance(raw, str):
+        return None
+    m = _IMPLEMENTING_INTENT_RE.search(raw)
+    if not m:
+        return None
+    return m.group(1) or ""
+
+
+def _red_waived_by_po(cwd, pbi):
+    """O PO já decidiu que o verde deste PBI é legítimo?
+
+    Existe falso-verde legítimo: PBI de refactor, de documentação, ou cujo
+    comportamento já estava implementado. Por isso o gate de RED não é uma
+    parede — é uma pergunta ao PO, e a resposta dele fica registrada como
+    qualquer outra decisão de gate ('red' aprovado). A aprovação já passou
+    por `guard_gate_clear` (que exige turno humano posterior à abertura), então
+    aqui basta ler o veredito: não há checagem nova a burlar.
+
+    `pbi` vazio é a fase no formato antigo (`implementing` sem sufixo), que a
+    prova de RED continua verificando: sem PBI não há como casar o gate com a
+    transição, e exigir esse casamento aqui deixaria o formato antigo com um
+    bloqueio SEM saída nenhuma — `_same_file` é sempre falso para "", então o
+    PO não conseguiria dispensar o verde por gate nenhum. Nesse caso qualquer
+    gate de RED aprovado serve: é a mesma imprecisão do próprio formato antigo,
+    não uma exceção nova.
+    """
+    for g in _safe_current_gates(cwd):
+        if g.get("checkpoint") != "red" or g.get("status") != "aprovado":
+            continue
+        if not pbi:
+            return True
+        gate_pbi = g.get("pbi")
+        if isinstance(gate_pbi, str) and gate_pbi and _same_file(pbi, cwd, gate_pbi):
+            return True
+    return False
+
+
+def guard_red_evidence(tool, tool_input, cwd, cfg):
+    """Prova de RED: a suíte precisa estar VERMELHA antes de implementar.
+
+    O gate de regressão já provava o verde mecanicamente antes do commit; o
+    vermelho, do outro lado do ciclo, era autodeclarado — `blackbox-tester`
+    rodava a suíte só para confirmar que os testes eram executáveis. Sem esta
+    prova, um teste tautológico (`assert resultado is not None`) entra verde
+    desde o dia zero, o `implementer` encontra a suíte passando e "termina"
+    sem escrever nada, e o único olho capaz de pegar isso é o revisor de
+    conformidade — passada única, contra o código que deveria existir.
+
+    LIMITE HONESTO: o vermelho é provado em nível de PBI (exit code da suíte),
+    não requisito por requisito. Parsear nomes de teste de um runner
+    arbitrário (pytest, jest, go test, cargo) seria frágil demais para virar
+    guard; a cobertura por requisito é declarada e verificada por outro
+    caminho, não por execução.
+
+    A prova vale por RODADA do gate de testes (ver `round_for`): enquanto os
+    testes aprovados forem os mesmos, o guard não roda a suíte de novo. Isso
+    não é só economia — sem esse cache, toda reentrada em implementação
+    (depois de uma conformidade reprovada, por exemplo) encontraria a suíte
+    verde, porque o código já existe, e bloquearia o fluxo pedindo um
+    vermelho que não pode mais existir.
+    """
+    if cfg.get("require_red") is False:
+        return
+    test_command = cfg.get("test_command")
+    if not test_command:
+        return  # sem suíte configurada não há vermelho a provar
+    touches = _touches_state_file(tool, tool_input, cwd, PHASE_REL)
+    if touches is None:
+        _block_red_if_too_large(cwd, tool_input)
+        return
+    if not touches:
+        return
+    pbi = _intended_implementing_pbi(tool, tool_input)
+    if pbi is None:
+        return
+    round_ = _safe_state_call(0, "round_for", cwd, pbi, "testes")
+    if _safe_state_call(False, "red_proven", cwd, pbi, round_):
+        return
+    if _red_waived_by_po(cwd, pbi):
+        _safe_state_call(False, "record_red", cwd, pbi, round_, None, True)
+        return
+
+    timeout = int(cfg.get("test_timeout_seconds", 600))
+    # Mesma regra do gate de regressão, e pela mesma razão: aqui não há um
+    # arquivo a interpretar com default seguro óbvio, há uma verificação que
+    # precisa RODAR. Não conseguir rodá-la não é o mesmo veredito que
+    # rodá-la e encontrar vermelho — os dois casos abaixo bloqueiam.
+    try:
+        returncode, _tail_out, _tail_err = _run_suite(cwd, test_command, timeout)
+    except _SuiteTimeout:
+        returncode = None
+    except (MemoryError, OSError) as exc:
+        block(
+            "[spec-gate] Prova de RED: a suíte de testes NÃO PÔDE SER "
+            f"EXECUTADA/AVALIADA ({exc.__class__.__name__}: {exc}). Transição "
+            "para a implementação bloqueada — não conseguir verificar não é o "
+            "mesmo que verificar e estar tudo bem. Investigue o ambiente de "
+            "execução (memória, disco, processo) antes de tentar de novo."
+        )
+        return
+    if returncode is None:
+        block(
+            "[spec-gate] Prova de RED: a suíte de testes excedeu o tempo limite "
+            f"de {timeout}s antes da implementação começar. Transição bloqueada. "
+            "Ajuste test_timeout_seconds ou aponte test_command para um "
+            "subconjunto que termine."
+        )
+        return
+    if returncode != 0:
+        _safe_state_call(False, "record_red", cwd, pbi, round_, returncode, False)
+        return
+    block(
+        "[spec-gate] PROVA DE RED FALHOU: a suíte JÁ PASSA INTEIRA antes de "
+        f"implementar {pbi or 'este PBI'}. Testes que passam sem a "
+        "implementação não capturam o comportamento da spec — ou são "
+        "tautológicos (asserção vazia, 'não lança erro', valor apenas "
+        "truthy), ou o comportamento já existe no código.\n"
+        "Isto NÃO é uma decisão sua: abra o gate de RED e pergunte ao PO, em "
+        "uma linha, se o comportamento já existe ou se os testes precisam "
+        "ser refeitos:\n"
+        '  {"checkpoint": "red", "pbi": "<caminho da spec>", "rodada": 1, '
+        '"status": "aguardando-po", "opened_at_seq": <seq atual>, '
+        '"questions": ["A suíte já passa sem implementação — o comportamento '
+        'já existe, ou os testes não capturam a spec?"]}\n'
+        "Aprovado o gate, esta transição libera sozinha. Para desligar a "
+        'prova de RED no projeto inteiro: "require_red": false no .specgate.json.'
+    )
+
+
+# Identidade de um requisito dentro da spec: [C1] em Comportamentos, [E1] em
+# Casos de erro. IDs são estáveis — nunca renumerados, nunca reusados —, que é
+# o que permite uma referência (num teste, numa divergência do revisor, num
+# commit) continuar apontando para o mesmo requisito depois que a spec muda.
+_REQUIREMENT_ID_RE = re.compile(r"\[([CE]\d+)\]")
+DEFAULT_TRACE_REL = os.path.join("docs", "traceability.json")
+MAX_TEST_FILE_SIZE = 2 * 1024 * 1024
+
+
+def _spec_requirement_ids(cwd, pbi):
+    """IDs de requisito declarados na spec deste PBI, em ordem de aparição.
+
+    Lista vazia significa spec no formato antigo (sem IDs) — e é o que mantém
+    `guard_trace` inerte em projetos que ainda não migraram: a rastreabilidade
+    passa a ser exigida quando a spec passa a declarar requisitos, não por uma
+    data de corte.
+    """
+    try:
+        with open(os.path.join(cwd, pbi), "r", encoding="utf-8") as fh:
+            texto = fh.read()
+    except OSError:
+        return []
+    vistos, ids = set(), []
+    for m in _REQUIREMENT_ID_RE.finditer(texto):
+        if m.group(1) not in vistos:
+            vistos.add(m.group(1))
+            ids.append(m.group(1))
+    return ids
+
+
+def _trace_key_prefix(pbi):
+    """`docs/backlog/02-conversao.md` -> `02-conversao` (prefixo da chave)."""
+    base = os.path.basename(pbi)
+    return base[:-3] if base.endswith(".md") else base
+
+
+def _load_trace(cwd, cfg):
+    rel = cfg.get("traceability_path") or DEFAULT_TRACE_REL
+    try:
+        with open(os.path.join(cwd, rel), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return rel, {}
+    return rel, data if isinstance(data, dict) else {}
+
+
+def _test_reference_missing(cwd, ref):
+    """Motivo pelo qual esta referência `arquivo::nome` não confere — ou None.
+
+    Verificação TEXTUAL, de propósito: confirma que o arquivo existe e que o
+    nome do teste aparece nele. Não executa nada e não entende a sintaxe de
+    nenhum runner — o que pega é a referência inventada ou apodrecida (teste
+    renomeado, arquivo movido), que é o modo de falha real de uma matriz de
+    rastreabilidade escrita à mão.
+    """
+    if not isinstance(ref, str) or not ref.strip():
+        return "referência vazia"
+    path, sep, name = ref.partition("::")
+    full = os.path.join(cwd, path)
+    if not os.path.isfile(full):
+        return f"arquivo não existe: {path}"
+    if not sep or not name.strip():
+        return None  # referência a arquivo inteiro: existir já basta
+    try:
+        if os.path.getsize(full) > MAX_TEST_FILE_SIZE:
+            return None  # grande demais para valer a busca; não inventa bloqueio
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            if name.strip() not in fh.read():
+                return f"teste não encontrado em {path}: {name.strip()}"
+    except OSError as exc:
+        return f"não foi possível ler {path}: {exc}"
+    return None
+
+
+def guard_trace(tool, tool_input, cwd, cfg):
+    """Rastreabilidade: todo requisito da spec precisa dizer quem o cobre.
+
+    O `blackbox-tester` sempre devolveu um "mapa de cobertura" no relatório —
+    prosa, consumida uma vez pelo orquestrador e perdida com a sessão. Aqui o
+    mesmo mapa vira artefato versionado (`docs/traceability.json`), verificado
+    na transição para a implementação: cada `[C1]`/`[E1]` da spec precisa de
+    uma entrada, e cada teste citado precisa existir de verdade.
+
+    Requisito SEM cobertura não é bloqueado — é bloqueado o SILÊNCIO sobre
+    ele. Uma entrada `{"tests": [], "status": "uncovered", "why": "..."}` passa:
+    a decisão de deixar um requisito sem teste é legítima e do PO, desde que
+    esteja escrita em algum lugar que sobreviva à sessão.
+    """
+    if cfg.get("require_trace") is False:
+        return
+    touches = _touches_state_file(tool, tool_input, cwd, PHASE_REL)
+    # None (comando Bash grande demais para parsear) cai aqui junto com False.
+    # Não há fallback próprio porque, sem conseguir extrair o PBI, também não
+    # dá para saber se a spec dele declara IDs — e bloquear às cegas tornaria
+    # este guard NÃO INERTE em projetos de spec no formato antigo, que é a
+    # compatibilidade que ele promete. Na configuração padrão o caso já é
+    # coberto por `guard_red_evidence`, que bloqueia comando grande mirando a
+    # transição; com `require_red: false` ou sem `test_command`, esta é uma
+    # fresta conhecida da camada de fricção, não uma parede.
+    if not touches:
+        return
+    pbi = _intended_implementing_pbi(tool, tool_input)
+    if not pbi:
+        return  # sem PBI declarado não há spec para parsear
+    ids = _spec_requirement_ids(cwd, pbi)
+    if not ids:
+        return  # spec sem IDs: formato antigo, guard inerte
+
+    rel, trace = _load_trace(cwd, cfg)
+    prefixo = _trace_key_prefix(pbi)
+    faltando, quebradas = [], []
+    for rid in ids:
+        chave = f"{prefixo}#{rid}"
+        entrada = trace.get(chave)
+        if not isinstance(entrada, dict) or "tests" not in entrada:
+            faltando.append(chave)
+            continue
+        tests = entrada.get("tests")
+        if not isinstance(tests, list):
+            faltando.append(chave)
+            continue
+        for ref in tests:
+            motivo = _test_reference_missing(cwd, ref)
+            if motivo:
+                quebradas.append(f"{chave}: {motivo}")
+
+    if not faltando and not quebradas:
+        return
+    partes = [f"[spec-gate] RASTREABILIDADE INCOMPLETA em {rel} para {pbi}."]
+    if faltando:
+        partes.append(
+            "Requisitos da spec sem entrada na matriz: " + ", ".join(faltando) + "."
+        )
+    if quebradas:
+        partes.append("Entradas apontando para testes que não existem: " + "; ".join(quebradas) + ".")
+    partes.append(
+        "Cada requisito precisa de uma entrada no formato "
+        '{"<pbi>#<id>": {"tests": ["arquivo::nome_do_teste"], "status": "covered"}}. '
+        "Requisito que você decidiu deixar sem teste também precisa de entrada — "
+        '{"tests": [], "status": "uncovered", "why": "<motivo>"} —, porque o que este '
+        "gate proíbe é o silêncio sobre o requisito, não a ausência de cobertura. "
+        'Para desligar no projeto inteiro: "require_trace": false no .specgate.json.'
+    )
+    block("\n".join(partes))
+
+
+def _block_red_if_too_large(cwd, tool_input):
+    """Fallback de `guard_red_evidence` quando o comando Bash passa de 64KB
+    (I5, ver BASH_CMD_MAX_VERIFIABLE_SIZE).
+
+    Mesma pré-checagem O(n) barata do seq e do batch — substring literal no
+    comando bruto, sem tokenizar. Sem ".specgate/phase" E "implementing" no
+    texto, nenhum mecanismo de escrita reconhecido por `write_targets` estaria
+    mirando uma transição para implementação, e um heredoc gigante alheio ao
+    spec-gate continua passando. Com os dois presentes, o lado seguro é o
+    mesmo do guard: a verificação não pôde rodar, então não libera.
+    """
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or PHASE_REL not in cmd or "implementing" not in cmd:
+        return
+    block(
+        "[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO (prova de RED). "
+        "Este comando Bash passa de 64KB e menciona .specgate/phase e "
+        "'implementing' — tamanho acima do qual o guard não reparseia o "
+        "comando inteiro por token, então não há como confirmar se ele inicia "
+        "a fase de implementação sem a suíte ter sido provada vermelha. "
+        "Escreva a fase com Write, que é inspecionável, em vez de um comando "
+        "Bash gigante."
+    )
+
+
+# Tokens que só embrulham o runner de verdade: `python3 -m pytest`, `npm run
+# test`, `uv run pytest`. Pular estes é o que faz o token significativo do
+# `test_command` ser "pytest" e não "python3" — que casaria com qualquer
+# script Python rodado durante a implementação e inflaria o contador.
+_RUNNER_WRAPPERS = {
+    "python", "python3", "py", "uv", "uvx", "poetry", "pipenv", "pdm", "hatch",
+    "npm", "npx", "yarn", "pnpm", "bun", "deno", "bundle", "rake", "make",
+    "run", "exec", "-m",
+}
+# Tokens significativos genéricos demais para casar sozinhos: "npm test" e
+# "make check" deixariam só "test"/"check", que aparecem em comandos alheios
+# (`ls test`, `./check.sh`). Nesses casos exigimos o test_command inteiro
+# como substring — mais restrito, mas sem inflar o contador contra o PBI.
+_GENERIC_RUNNER_TOKENS = {"test", "tests", "check", "verify", "ci", "all"}
+
+
+@functools.lru_cache(maxsize=8)
+def _runner_token(test_command):
+    """Token que identifica o runner dentro do test_command ("" se não há)."""
+    try:
+        tokens = shlex.split(test_command, posix=True)
+    except ValueError:
+        tokens = test_command.split()
+    for t in tokens:
+        if t.startswith("-"):
+            continue
+        base = os.path.basename(t)
+        if base in _RUNNER_WRAPPERS:
+            continue
+        return base
+    return ""
+
+
+def _invokes_test_runner(cmd, test_command):
+    """Este comando Bash é uma execução da suíte?
+
+    Reconhecer isto é o que torna o teto de tentativas MECÂNICO: quem conta é
+    o hook, no mesmo espírito do contador de turnos — o agente não declara
+    quantas rodadas gastou, ele gasta e o guard vê.
+    """
+    if not isinstance(cmd, str) or not cmd:
+        return False
+    if test_command in cmd:
+        return True
+    token = _runner_token(test_command)
+    if not token or token in _GENERIC_RUNNER_TOKENS:
+        return False
+    try:
+        tokens = shlex.split(cmd, posix=True)
+    except ValueError:
+        tokens = cmd.split()
+    return any(os.path.basename(t) == token for t in tokens)
+
+
+def guard_attempts(tool, tool_input, cwd, cfg, pbi):
+    """Teto de tentativas de correção, contado pelo hook e não pelo agente.
+
+    `max_fix_attempts` existia só como texto no prompt do `implementer` — a
+    regra "término mecânico, nunca autodeclarado" valia para o verde (o gate
+    de regressão roda a suíte de verdade) e não valia para o teto. Aqui o
+    contador vive em `.specgate/attempts.json`, é incrementado por este guard
+    a cada execução da suíte durante a implementação, e o estouro bloqueia
+    novas edições de código-fonte — o agente para e reporta, que é o
+    comportamento que o prompt pedia e não conseguia impor.
+
+    Rodar a suíte NUNCA é bloqueado, nem depois do teto: é assim que o estado
+    real (quais testes ainda falham) aparece no relatório ao PO.
+
+    RESSALVA: PreToolUse roda ANTES do comando, então a contagem é levemente
+    otimista — uma execução que sequer chega a iniciar (typo no comando, dep
+    faltando) já contou. A válvula é o PO: qualquer gate deste PBI ganhando
+    rodada nova zera o contador, e abrir rodada nova exige turno humano real.
+    """
+    if not pbi:
+        return  # fase no formato antigo, sem PBI: não há contra o que contar
+    try:
+        max_attempts = int(cfg.get("max_fix_attempts", 5))
+    except (TypeError, ValueError):
+        max_attempts = 5
+    if max_attempts <= 0:
+        return  # teto desligado no projeto
+    test_command = cfg.get("test_command")
+    if not test_command:
+        return
+
+    round_ = _safe_state_call(0, "max_round_for_pbi", cwd, pbi)
+    if tool == "Bash" and _invokes_test_runner(tool_input.get("command"), test_command):
+        agora = _safe_state_call(0, "bump_attempt", cwd, pbi, round_, tool_input.get("command"))
+        # Metade do teto é onde trocar de estratégia ainda é barato. Daqui em
+        # diante as tentativas acontecem no contexto mais poluído da sessão —
+        # justamente quando um par de olhos novos ajuda mais, e não menos. O
+        # aviso sai UMA vez, no cruzamento; repetir a cada execução viraria
+        # ruído que se aprende a ignorar.
+        if agora == max(1, (max_attempts + 1) // 2):
+            notice(
+                f"[spec-gate] Tentativa {agora}/{max_attempts} em {pbi}. Daqui em "
+                "diante, insistir no MESMO contexto rende cada vez menos: encerre "
+                "este implementer e delegue a um novo, em contexto limpo, passando "
+                "só o diagnóstico (quais testes falham, o que já foi tentado, a "
+                "hipótese do bloqueio) — não o histórico inteiro. Trocar de olhos "
+                "antes do teto é mais barato que declarar o PBI failed depois dele."
+            )
+        return
+
+    used = _safe_state_call(0, "attempt_count", cwd, pbi, round_)
+    if used < max_attempts:
+        return
+    source_dirs = norm_paths(cwd, cfg.get("source_paths", ["src"]))
+    if not source_dirs:
+        return
+    for t in write_targets(tool, tool_input):
+        if not touches_source(t, cwd, source_dirs):
+            continue
+        block(
+            f"[spec-gate] TETO DE TENTATIVAS ATINGIDO ({used}/{max_attempts}) em "
+            f"{pbi}. Edição de código-fonte bloqueada ({t}).\n"
+            "O teto existe porque insistir além dele produz mudanças cada vez "
+            "menos informadas, no contexto mais poluído da sessão. PARE e "
+            "reporte ao PO: quais testes ainda falham, o que você tentou, e "
+            "sua hipótese do bloqueio — específica o bastante para decisão sem "
+            "investigação extra.\n"
+            "Rodar a suíte continua liberado (é assim que o estado real entra "
+            "no relatório). O contador zera quando o PO abrir rodada nova de "
+            "um gate deste PBI; não tente contorná-lo por outro caminho."
+        )
+
+
 def guard_seq_lock(tool, tool_input, cwd):
     """Bloqueia, na medida da camada de fricção, escrita do agente em
     .specgate/seq via tool call.
@@ -1004,6 +1583,73 @@ def guard_seq_lock(tool, tool_input, cwd):
         "depende o gate de PO. NÃO tente contornar por outro caminho — se "
         "você precisa que o usuário fale, peça e aguarde a resposta real."
     )
+
+
+# Arquivos de estado que SÓ o hook escreve (nunca o fluxo do /spec-gate), com
+# o que cada um prova. Ao contrário de phase/gate.json/batch.json — que o
+# orquestrador precisa escrever no fluxo normal e por isso têm bloqueio
+# condicionado —, estes dois não têm NENHUMA escrita legítima partindo de uma
+# tool call: são gravados de dentro do próprio guard (record_red/bump_attempt).
+HOOK_OWNED_STATE = (
+    (RED_REL, "prova de que a suíte estava VERMELHA antes de implementar"),
+    (ATTEMPTS_REL, "contagem de tentativas gastas na implementação"),
+)
+
+
+def _block_hook_state_if_too_large(cwd, tool_input, rel, proof):
+    """Fallback de `guard_hook_state_lock` para comando Bash grande demais
+    (I5). Mesma escolha de `_block_seq_if_too_large`, e pela mesma razão: a
+    condição normal deste guard bloqueia SEMPRE que o alvo é um destes
+    arquivos, sem depender de gate nenhum, então "não conseguir verificar"
+    também bloqueia — mas só quando o comando ao menos MENCIONA o arquivo
+    (pré-checagem O(n) de substring), para não penalizar heredoc legítimo.
+    """
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or rel not in cmd:
+        return
+    block(
+        f"[spec-gate] COMANDO GRANDE DEMAIS PARA VERIFICAR BLOQUEADO ({rel}). "
+        f"Este comando Bash passa de 64KB e menciona {rel} — tamanho acima do "
+        "qual o guard não reparseia o comando inteiro por token, então não há "
+        f"como confirmar que ele não escreve na {proof}. Este arquivo é "
+        "mantido pelo hook e não tem escrita legítima partindo do agente."
+    )
+
+
+def guard_hook_state_lock(tool, tool_input, cwd):
+    """Bloqueia, na medida da camada de fricção, escrita do agente em
+    .specgate/red.json e .specgate/attempts.json.
+
+    Mesmo papel de `guard_seq_lock`, para os dois arquivos que 0.3.0
+    introduziu. A promessa dos dois mecanismos novos é a MESMA do contador de
+    turnos — "quem conta é o hook, não o agente que está sendo contado" —, e
+    ela só existe se o agente não puder reescrever o resultado: sem este
+    guard, um `Write .specgate/attempts.json` com `count: 0` devolve tentativas
+    infinitas depois do teto, e um `Write .specgate/red.json` com
+    `proven: true` forja o vermelho que a transição para a implementação
+    exige, sem a suíte nunca ter falhado.
+
+    Bloqueia SEMPRE que o alvo é um destes arquivos, com ou sem gate aberto:
+    ao contrário de phase/gate.json/batch.json, aqui não existe escrita
+    legítima partindo de uma tool call — o guard grava os dois de dentro do
+    próprio processo (`record_red`/`bump_attempt`), que nunca passa por
+    PreToolUse.
+    """
+    for rel, proof in HOOK_OWNED_STATE:
+        touches = _touches_state_file(tool, tool_input, cwd, rel)
+        if touches is None:
+            _block_hook_state_if_too_large(cwd, tool_input, rel, proof)
+            continue
+        if not touches:
+            continue
+        block(
+            f"[spec-gate] ESCRITA EM {rel} BLOQUEADA. Este arquivo é mantido "
+            f"pelo hook (é a {proof}) e escrevê-lo à mão forja exatamente o "
+            "fato que ele existe para provar. NÃO tente contornar por outro "
+            "caminho: se o teto de tentativas estourou, PARE e reporte ao PO; "
+            "se a suíte já passa antes de implementar, abra o gate de RED e "
+            "deixe o PO decidir."
+        )
 
 
 def _batch_from_content(tool, tool_input):
@@ -1075,6 +1721,26 @@ def guard_batch_lock(tool, tool_input, cwd):
     )
 
 
+def _phase_write_pbi(tool, tool_input):
+    """PBI da fase que esta chamada pretende gravar, ou None se não dá para
+    saber (formato antigo, fase vazia, escrita por Bash não inspecionável).
+
+    None significa "não sei de quem é esta transição" — e quem chama trata
+    isso como transição de escopo desconhecido, sujeita ao bloqueio mais
+    amplo. Saber é o que compra a liberação parcial, não o contrário.
+    """
+    if tool == "Write":
+        raw = tool_input.get("content")
+    elif tool == "Edit":
+        raw = tool_input.get("new_string")
+    else:
+        return None
+    if not isinstance(raw, str):
+        return None
+    _phase, pbi = parse_phase(raw)
+    return pbi or None
+
+
 def guard_po_gate(tool, tool_input, cwd):
     """Chokepoint: com gate de PO aberto, a transição de fase fica travada.
 
@@ -1083,6 +1749,28 @@ def guard_po_gate(tool, tool_input, cwd):
     o fluxo de avançar sem decisão do PO — é a mesma camada de fricção
     descrita em "MODELO DE CAMADAS" acima de `write_targets`, não uma
     barreira à prova de qualquer comando Bash.
+
+    ESCOPO (0.3.0): o bloqueio é POR PBI, não global. Até 0.2.0, qualquer
+    gate aberto travava qualquer transição de fase — o que fazia um único PBI
+    estacionado parar a fila inteira, limite que o README documentava como
+    "estacionar preserva o trabalho, mas não faz o próximo PBI andar". A
+    propriedade que importa continua intacta: nada avança NAQUILO que o PO
+    não decidiu. O que muda é que o resto da fila deixa de ser refém.
+
+    Bloqueia quando:
+    1. Há gate de BACKLOG aberto — o contrato do lote inteiro está em jogo,
+       e nenhum PBI dele significa nada até o PO decidir; ou
+    2. Há gate aberto do PBI que esta escrita quer ativar; ou
+    3. Há gate aberto SEM campo `pbi` (formato legado) — não dá para dizer a
+       qual item ele se refere, então ele vale para todos; ou
+    4. Não dá para saber de quem é a transição (fase sem PBI declarado,
+       escrita por Bash, fase sendo apagada) e existe QUALQUER gate aberto —
+       o lado seguro de 0.2.0, preservado para todo caso não identificado.
+
+    Os dois lados da identificação são simétricos de propósito: só há
+    liberação parcial quando SE SABE de quem é o gate E de quem é a
+    transição. Ignorância de qualquer um dos lados cai no bloqueio amplo —
+    senão omitir o dado viraria a forma mais fácil de destravar.
     """
     gates = _safe_open_gates(cwd)
     if not gates:
@@ -1093,6 +1781,22 @@ def guard_po_gate(tool, tool_input, cwd):
         return
     if not touches:
         return
+
+    alvo = _phase_write_pbi(tool, tool_input)
+    if alvo is not None:
+        def relevante(g):
+            if g.get("checkpoint") == "backlog":
+                return True
+            pbi = g.get("pbi")
+            if not isinstance(pbi, str) or not pbi:
+                return True  # gate sem PBI: não dá para dizer de quem é
+            return _same_file(alvo, cwd, pbi)
+
+        relevantes = [g for g in gates if relevante(g)]
+        if not relevantes:
+            return  # gates abertos, mas nenhum deles é sobre este PBI
+        gates = relevantes
+
     names = ", ".join(str(g.get("checkpoint", "?")) for g in gates)
     block(
         f"[spec-gate] GATE DE PO ABERTO ({names}). O fluxo não avança de fase "
@@ -1868,12 +2572,22 @@ def main():
             sys.exit(0)  # projeto não usa spec-gate; guard totalmente inerte
 
         guard_seq_lock(tool, tool_input, cwd)
+        guard_hook_state_lock(tool, tool_input, cwd)
         guard_batch_lock(tool, tool_input, cwd)
         guard_po_gate(tool, tool_input, cwd)
         guard_gate_clear(tool, tool_input, cwd)
-        phase = current_phase(cwd)
+        phase, phase_pbi = parse_phase(current_phase(cwd))
         if phase == "testing":
             guard_testing_phase(tool, tool_input, cwd, cfg)
+        if phase == "implementing":
+            guard_attempts(tool, tool_input, cwd, cfg, phase_pbi)
+        # Os dois guards da entrada da implementação, na ordem do mais barato
+        # para o mais caro. Ambos vêm depois de `guard_po_gate` de propósito:
+        # com gate aberto a transição já está bloqueada, e rodar a suíte
+        # inteira para descobrir isso seria pagar o custo mais caro do guard
+        # por uma transição que não vai acontecer de qualquer jeito.
+        guard_trace(tool, tool_input, cwd, cfg)
+        guard_red_evidence(tool, tool_input, cwd, cfg)
         # O freeze precisa de um FATO EM DISCO, não de narrativa: o hook só
         # enxerga arquivos. Antes do Gate PO 1 a spec ainda está sendo
         # escrita pelo spec-analyst e não é contrato; depois dele, é.
@@ -1887,6 +2601,14 @@ def main():
     except Exception:
         sys.exit(0)
 
+    # Avisos só saem quando nenhum guard bloqueou: um `block()` já levou a
+    # mensagem mais importante ao agente por stderr, e somar um aviso a ela
+    # seria competir com o próprio bloqueio pela atenção.
+    if _NOTICES:
+        try:
+            sys.stdout.write(json.dumps({"systemMessage": "\n".join(_NOTICES)}))
+        except Exception:
+            pass
     sys.exit(0)
 
 

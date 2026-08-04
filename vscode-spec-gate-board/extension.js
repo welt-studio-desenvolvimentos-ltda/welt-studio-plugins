@@ -11,9 +11,15 @@ function root() {
 }
 
 function readState(dir) {
-  const out = { config: null, batch: null, gates: [], events: [] };
+  const out = { config: null, batch: null, gates: [], events: [], attempts: null, red: null, phase: "" };
   try { out.config = JSON.parse(fs.readFileSync(path.join(dir, ".specgate.json"), "utf8")); } catch (e) {}
   try { out.batch = JSON.parse(fs.readFileSync(path.join(dir, ".specgate", "batch.json"), "utf8")); } catch (e) {}
+  // Contador de tentativas e prova de RED: escritos pelo hook, não pelo
+  // agente. É o que permite o board mostrar "tentativa 3/5" como fato medido
+  // em vez do campo `attempts` de batch.json, declarado por quem foi medido.
+  try { out.attempts = JSON.parse(fs.readFileSync(path.join(dir, ".specgate", "attempts.json"), "utf8")); } catch (e) {}
+  try { out.red = JSON.parse(fs.readFileSync(path.join(dir, ".specgate", "red.json"), "utf8")); } catch (e) {}
+  try { out.phase = fs.readFileSync(path.join(dir, ".specgate", "phase"), "utf8").trim(); } catch (e) {}
   try {
     const raw = fs.readFileSync(path.join(dir, ".specgate", "gate.json"), "utf8");
     const parsed = JSON.parse(raw);

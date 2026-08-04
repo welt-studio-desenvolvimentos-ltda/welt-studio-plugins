@@ -1,7 +1,7 @@
 {
   "name": "spec-gate",
-  "description": "Fluxo spec-first único, gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome, quatro gates que param para decisão humana (backlog, testes, aceite, ambiguidade) e gates mecânicos de black-box, regressão e operações destrutivas.",
-  "version": "0.2.0",
+  "description": "Fluxo spec-driven gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome, seis gates que param para decisão humana (backlog, testes, aceite, ambiguidade, RED, emenda) e gates mecânicos de black-box, rastreabilidade requisito→teste, prova de RED, teto de tentativas, regressão e operações destrutivas.",
+  "version": "0.3.0",
   "author": {
     "name": "Welt Studio"
   }

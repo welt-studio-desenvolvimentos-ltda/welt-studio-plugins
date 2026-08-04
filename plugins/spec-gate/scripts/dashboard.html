@@ -83,6 +83,22 @@ function rodadaNum(g){
 // anteriores, já decididas, nunca contam como pendentes — sem isto o
 // dashboard mostraria um gate reprovado antigo como se ainda esperasse o
 // PO, mesmo depois de uma rodada nova já ter sido aberta.
+// Maior rodada entre TODAS as séries de gate de um PBI — o mesmo número que o
+// guard usa para carimbar o contador de tentativas (max_round_for_pbi). O
+// contador é por (PBI, rodada): quando o PO abre rodada nova de qualquer gate
+// do item, o guard passa a contar do zero, e sem conferir isto aqui o painel
+// seguiria anunciando um teto que já não está perto de estourar.
+function rodadaMaxDoPbi(gates, spec){
+  if(gates && typeof gates === "object" && !Array.isArray(gates)) gates = [gates];
+  if(!Array.isArray(gates)) return 0;
+  let maior = 0;
+  for(const g of gates){
+    if(!g || typeof g !== "object" || g.pbi !== spec) continue;
+    maior = Math.max(maior, rodadaNum(g));
+  }
+  return maior;
+}
+
 function gatesAbertos(gates){
   // Tolera o formato de gate único (um objeto em vez de array), igual a
   // specgate_state.read_gates, board.sh, statusline.sh e a extensão do VS
@@ -110,17 +126,42 @@ async function refresh(){
   const stamp = document.getElementById("stamp");
   try{
     let projName = "(sem nome, defina project_name no .specgate.json)";
+    let teto = 5;
     try{
       const cfg = await (await grab(".specgate.json")).json();
       if(cfg.project_name) projName = cfg.project_name;
+      if(Number.isFinite(Number(cfg.max_fix_attempts))) teto = Number(cfg.max_fix_attempts);
     }catch(e){}
     document.getElementById("proj").textContent = projName;
 
     let data = null;
     try{ data = await (await grab(".specgate/batch.json")).json(); }catch(e){}
 
+    // Tentativas e prova de RED vêm de arquivos escritos pelo HOOK, não pelo
+    // agente: o campo `attempts` de batch.json é declarado por quem está
+    // sendo medido, o contador de attempts.json é medido pelo guard a cada
+    // execução da suíte. Por isso o segundo tem precedência quando existe.
+    let tentativas = null;
+    try{ tentativas = await (await grab(".specgate/attempts.json")).json(); }catch(e){}
+    let red = null;
+    try{ red = await (await grab(".specgate/red.json")).json(); }catch(e){}
+
     let gates = [];
     try{ gates = await (await grab(".specgate/gate.json")).json(); }catch(e){}
+
+    const tentativasDe = spec => {
+      if(!tentativas || typeof tentativas !== "object" || tentativas.pbi !== spec) return null;
+      // Rodada anterior: para o guard o contador já está zerado.
+      if(Number(tentativas.round || 0) !== rodadaMaxDoPbi(gates, spec)) return 0;
+      const n = Number(tentativas.count);
+      return Number.isFinite(n) ? n : null;
+    };
+    const seloRed = spec => {
+      const e = red && typeof red === "object" ? red[spec] : null;
+      if(!e || typeof e !== "object" || !e.proven) return "";
+      return e.waived ? " · RED dispensado pelo PO" : " · RED provado";
+    };
+
     const gatesEl = document.getElementById("gates");
     const abertos = gatesAbertos(gates);
     if(abertos.length){
@@ -157,7 +198,7 @@ async function refresh(){
           ${pill(i.status)}
           <div class="id">${esc(baseName(i.spec))}</div>
           <div class="title">${esc(i.title || baseName(i.spec).replace(/^\d+-|\.md$/g,"").replace(/-/g," "))}</div>
-          <div class="meta">tentativas ${esc(i.attempts ?? 0)}${i.commit ? " · " + esc(String(i.commit).slice(0,9)) : ""}${i.updated ? " · " + esc(i.updated) : ""}</div>
+          <div class="meta">tentativas ${tentativasDe(i.spec) === null ? esc(i.attempts ?? 0) : esc(tentativasDe(i.spec) + "/" + teto)}${seloRed(i.spec)}${i.commit ? " · " + esc(String(i.commit).slice(0,9)) : ""}${i.updated ? " · " + esc(i.updated) : ""}</div>
         </div>`).join("");
 
       const qs = items.flatMap(i => (i.questions||[]).map(q => ({spec: baseName(i.spec), q})));

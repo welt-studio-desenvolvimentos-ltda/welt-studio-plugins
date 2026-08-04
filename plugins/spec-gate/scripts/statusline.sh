@@ -6,7 +6,9 @@ set -euo pipefail
 CWD=$(python3 -c "import json,sys;print(json.load(sys.stdin).get('cwd') or '.')" 2>/dev/null || pwd)
 B="$CWD/.specgate/batch.json"
 G="$CWD/.specgate/gate.json"
-python3 - "$B" "$G" <<'PY'
+A="$CWD/.specgate/attempts.json"
+CFG="$CWD/.specgate.json"
+python3 - "$B" "$G" "$A" "$CFG" <<'PY'
 import json, sys
 
 def carrega(path, default):
@@ -62,6 +64,29 @@ if abertos:
     extra = f" · {len(abertos)} gate(s) aberto(s) ({label} rodada {rodada(destaque)})"
 else:
     extra = ""
+
+# Tentativas do PBI em curso: contadas pelo hook a cada execução da suíte
+# durante a implementação, nunca declaradas pelo agente. Aparecem aqui para
+# que o teto chegando seja visível ANTES do bloqueio, não depois dele.
+#
+# O contador é por (PBI, rodada): quando o PO abre rodada nova de qualquer
+# gate do item, o guard passa a contar do zero. Por isso a rodada gravada é
+# conferida contra a maior rodada do PBI — sem isso a statusline anunciaria
+# um teto que já não está perto de estourar.
+tentativas = carrega(sys.argv[3], {})
+cfg = carrega(sys.argv[4], {})
+if isinstance(tentativas, dict) and tentativas.get("pbi"):
+    try:
+        maior_rodada = max(
+            [rodada(g) for g in gates_raw
+             if isinstance(g, dict) and g.get("pbi") == tentativas["pbi"]] or [0]
+        )
+        gastas = int(tentativas.get("count", 0)) if int(tentativas.get("round", 0)) == maior_rodada else 0
+        teto = int(cfg.get("max_fix_attempts", 5)) if isinstance(cfg, dict) else 5
+    except (TypeError, ValueError):
+        gastas = teto = 0
+    if gastas > 0 and teto > 0:
+        extra += f" · tentativa {gastas}/{teto}"
 
 print(base + extra)
 PY

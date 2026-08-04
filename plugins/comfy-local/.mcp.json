@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "comfy": {
+      "command": "${user_config.python_path}",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/launch.py"],
+      "env": {
+        "COMFY_BIN": "${user_config.comfy_bin}",
+        "COMFY_LOCAL_URL": "${user_config.comfy_url}",
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}",
+        "DO_NOT_TRACK": "1"
+      }
+    }
+  }
+}

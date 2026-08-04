@@ -11,3 +11,6 @@ node_modules/
 
 # Scratch do subagent-driven-development (ledger de progresso)
 .superpowers/
+
+# Venv que o comfy-local monta fora do Claude Code (sem CLAUDE_PLUGIN_DATA)
+.local-data/

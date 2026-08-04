@@ -30,8 +30,14 @@
     {
       "name": "spec-gate",
       "source": "./plugins/spec-gate",
-      "description": "Fluxo spec-first único, gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome e quatro gates de decisão humana (backlog, testes, aceite, ambiguidade) sobre os gates mecânicos de black-box, regressão e operações destrutivas.",
-      "version": "0.2.0"
+      "description": "Fluxo spec-driven gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome e seis gates de decisão humana (backlog, testes, aceite, ambiguidade, RED, emenda) sobre os gates mecânicos de black-box, rastreabilidade requisito→teste, prova de RED, teto de tentativas, regressão e operações destrutivas.",
+      "version": "0.3.0"
+    },
+    {
+      "name": "comfy-local",
+      "source": "./plugins/comfy-local",
+      "description": "Dirige um ComfyUI local por MCP: introspecção da instalação viva, construção de workflows por fragmentos, execução e coleta de saídas. Instala desabilitado; exige comfy-cli.",
+      "version": "0.1.0"
     }
   ]
 }

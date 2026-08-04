@@ -29,7 +29,12 @@ class GuardBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         os.makedirs(os.path.join(self.tmp, ".specgate"), exist_ok=True)
-        self.config({"test_command": "true", "source_paths": ["src"]})
+        # require_red desligado na base de propósito: o test_command da
+        # fixture é "true" (suíte sempre verde), então a prova de RED
+        # bloquearia toda transição para 'implementing' e contaminaria os
+        # testes dos OUTROS guards, que usam essa transição só como uma
+        # escrita qualquer em .specgate/phase. Quem testa o RED liga o flag.
+        self.config({"test_command": "true", "source_paths": ["src"], "require_red": False})
 
     def config(self, data):
         with open(os.path.join(self.tmp, ".specgate.json"), "w", encoding="utf-8") as fh:
@@ -1553,6 +1558,96 @@ class SeqLockTest(GuardBase):
         self.assertEqual(r.returncode, 0)
 
 
+class HookStateLockTest(GuardBase):
+    """0.3.0: `.specgate/red.json` e `.specgate/attempts.json` são a prova de
+    que a suíte estava vermelha e a contagem de tentativas — os dois fatos que
+    os mecanismos novos prometem não ser autodeclaráveis. Sem este guard o
+    agente reescreve os dois por tool call: `count: 0` devolve tentativas
+    infinitas depois do teto, `proven: true` forja o vermelho que a transição
+    para a implementação exige. Mesmo papel de `guard_seq_lock`, mesma regra:
+    bloqueia sempre, com ou sem gate aberto, porque não existe escrita
+    legítima destes arquivos partindo do agente.
+    """
+
+    def test_write_em_attempts_e_bloqueado(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": ".specgate/attempts.json",
+                "content": '{"pbi": "docs/backlog/02-x.md", "round": 1, "count": 0}',
+            },
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/attempts.json BLOQUEADA", r.stderr)
+
+    def test_write_em_red_e_bloqueado(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": ".specgate/red.json",
+                "content": '{"docs/backlog/02-x.md": {"proven": true, "round": 1}}',
+            },
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/red.json BLOQUEADA", r.stderr)
+
+    def test_edit_em_attempts_e_bloqueado(self):
+        self.state("attempts.json", '{"count": 5}')
+        r = run_guard({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": ".specgate/attempts.json",
+                "old_string": "5", "new_string": "0",
+            },
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/attempts.json BLOQUEADA", r.stderr)
+
+    def test_redirect_via_bash_para_red_e_bloqueado(self):
+        r = self.bash("echo '{}' > .specgate/red.json")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/red.json BLOQUEADA", r.stderr)
+
+    def test_rm_de_attempts_via_bash_e_bloqueado(self):
+        # Apagar o contador é a forma mais direta de zerá-lo.
+        r = self.bash("rm .specgate/attempts.json")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/attempts.json BLOQUEADA", r.stderr)
+
+    def test_python_dash_c_escrevendo_red_e_bloqueado(self):
+        r = self.bash(
+            "python3 -c \"open('.specgate/red.json','w').write('{}')\""
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ESCRITA EM .specgate/red.json BLOQUEADA", r.stderr)
+
+    def test_comando_grande_mencionando_attempts_e_bloqueado(self):
+        recheio = "x" * (64 * 1024 + 10)
+        r = self.bash(f"echo '{{}}' > .specgate/attempts.json # {recheio}")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("COMANDO GRANDE DEMAIS PARA VERIFICAR", r.stderr)
+
+    def test_comando_grande_alheio_nao_e_bloqueado(self):
+        recheio = "x" * (64 * 1024 + 10)
+        r = self.bash(f"echo oi > outro.txt # {recheio}")
+        self.assertEqual(r.returncode, 0)
+
+    def test_leitura_de_attempts_continua_liberada(self):
+        # O implementer é instruído a `cat .specgate/attempts.json` para saber
+        # em que tentativa está: o guard tranca a ESCRITA, nunca a leitura.
+        self.state("attempts.json", '{"count": 3}')
+        r = self.bash("cat .specgate/attempts.json")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_sem_specgate_json_e_inerte(self):
+        os.remove(os.path.join(self.tmp, ".specgate.json"))
+        r = self.bash("echo '{}' > .specgate/attempts.json")
+        self.assertEqual(r.returncode, 0)
+
+
 class SpecFreezeTest(GuardBase):
     """Task 6: a janela do freeze da spec começa só DEPOIS do Gate PO 1
     (backlog aprovado), nunca "sempre que há fase ativa". As Fases 0 e 1
@@ -1650,7 +1745,37 @@ class SpecLockInterpreterEscapeTest(GuardBase):
         self.assertEqual(r.returncode, 0)
 
 
-class SpecLockRetomadaAmbiguidadeTest(GuardBase):
+class SpecWindowBase(GuardBase):
+    """Fixture da janela de escrita da spec (sem testes, para que herdar
+    daqui não reexecute a suíte da base): backlog aprovado no disco, duas
+    specs em docs/backlog/ e os helpers de gate/seq/escrita.
+    """
+
+    PBI_PATH = "docs/backlog/03-x.md"
+    OUTRO_PBI_PATH = "docs/backlog/04-y.md"
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        with open(os.path.join(self.tmp, self.PBI_PATH), "w", encoding="utf-8") as fh:
+            fh.write("# spec original")
+        with open(os.path.join(self.tmp, self.OUTRO_PBI_PATH), "w", encoding="utf-8") as fh:
+            fh.write("# outra spec")
+        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"backlog_aprovado": True}, fh)
+
+    def _seq(self, valor):
+        self.state("seq", str(valor))
+
+    def _escreve_spec(self, path=None):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": path or self.PBI_PATH, "content": "# spec atualizada"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+
+class SpecLockRetomadaAmbiguidadeTest(SpecWindowBase):
     """C1: o ciclo de estacionamento precisa fechar. O gate de ambiguidade
     estaciona um PBI; o PO responde; e a retomada exige atualizar a spec
     DAQUELE PBI com a decisão — mas antes desta correção, guard_spec_lock
@@ -1667,19 +1792,6 @@ class SpecLockRetomadaAmbiguidadeTest(GuardBase):
     fase avança de novo (o retomada reativou `.specgate/phase`).
     """
 
-    PBI_PATH = "docs/backlog/03-x.md"
-    OUTRO_PBI_PATH = "docs/backlog/04-y.md"
-
-    def setUp(self):
-        super().setUp()
-        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
-        with open(os.path.join(self.tmp, self.PBI_PATH), "w", encoding="utf-8") as fh:
-            fh.write("# spec original")
-        with open(os.path.join(self.tmp, self.OUTRO_PBI_PATH), "w", encoding="utf-8") as fh:
-            fh.write("# outra spec")
-        with open(os.path.join(self.tmp, ".specgate", "batch.json"), "w", encoding="utf-8") as fh:
-            json.dump({"backlog_aprovado": True}, fh)
-
     def _abre_gate_respondido(self, opened_at_seq=3, rodada=1, pbi=None, extra=None):
         gates = [{
             "checkpoint": "ambiguidade",
@@ -1692,16 +1804,6 @@ class SpecLockRetomadaAmbiguidadeTest(GuardBase):
         if extra:
             gates.extend(extra)
         self.state("gate.json", json.dumps(gates))
-
-    def _seq(self, valor):
-        self.state("seq", str(valor))
-
-    def _escreve_spec(self, path=None):
-        return run_guard({
-            "tool_name": "Write",
-            "tool_input": {"file_path": path or self.PBI_PATH, "content": "# spec atualizada"},
-            "cwd": self.tmp,
-        }, self.tmp)
 
     def test_respondido_com_turno_posterior_edita_a_spec_daquele_pbi(self):
         self._abre_gate_respondido(opened_at_seq=3)
@@ -1795,6 +1897,86 @@ class SpecLockRetomadaAmbiguidadeTest(GuardBase):
         r = self._escreve_spec()
         self.assertEqual(r.returncode, 2)
         self.assertIn("SPEC CONGELADA", r.stderr)
+
+
+class SpecLockEmendaTest(SpecWindowBase):
+    """0.3.0: emenda de spec num PBI já entregue reusa a MESMA janela da
+    retomada de estacionamento, com as mesmas cinco pré-condições.
+
+    Sem isto, mudar um requisito depois da entrega não tinha caminho nenhum:
+    `docs/backlog/` fica congelado desde o gate de backlog, e a única exceção
+    era a retomada de um PBI estacionado. A spec era o ponto de partida, não
+    a fonte contínua.
+    """
+
+    def _abre_emenda(self, opened_at_seq=3, rodada=1, status="respondido", pbi=None, extra=None):
+        gates = [{
+            "checkpoint": "emenda",
+            "pbi": pbi or self.PBI_PATH,
+            "rodada": rodada,
+            "status": status,
+            "opened_at_seq": opened_at_seq,
+            "questions": ["mudar o limite de 50 para 100?"],
+        }]
+        if extra:
+            gates.extend(extra)
+        self.state("gate.json", json.dumps(gates))
+
+    def test_emenda_respondida_com_turno_posterior_edita_a_spec(self):
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(5)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_emenda_sem_turno_novo_bloqueia(self):
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(3)
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("SPEC CONGELADA", r.stderr)
+
+    def test_emenda_ainda_aguardando_po_nao_abre_janela(self):
+        self._abre_emenda(opened_at_seq=3, status="aguardando-po")
+        self._seq(5)
+        self.assertEqual(self._escreve_spec().returncode, 2)
+
+    def test_emenda_de_um_pbi_nao_libera_a_spec_de_outro(self):
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(5)
+        self.assertEqual(self._escreve_spec(path=self.OUTRO_PBI_PATH).returncode, 2)
+
+    def test_emenda_com_fase_ativa_nao_abre_janela(self):
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(5)
+        self.state("phase", f"implementing:{self.PBI_PATH}")
+        self.assertEqual(self._escreve_spec().returncode, 2)
+
+    def test_fase_de_outro_pbi_nao_fecha_a_janela_deste(self):
+        # 0.3.0: com o chokepoint por PBI, a fila anda enquanto um item está
+        # estacionado — então a fase corrente quase sempre é de OUTRO PBI.
+        # Exigir a fase globalmente vazia fecharia a janela justamente no
+        # cenário que a versão nova existe para permitir.
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(5)
+        self.state("phase", f"implementing:{self.OUTRO_PBI_PATH}")
+        r = self._escreve_spec()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_fase_sem_pbi_declarado_fecha_a_janela_para_todos(self):
+        # `testing` é do lote inteiro (e o formato antigo não diz de quem é):
+        # sem saber o dono da fase, o lado conservador é fechar.
+        self._abre_emenda(opened_at_seq=3)
+        self._seq(5)
+        self.state("phase", "testing")
+        self.assertEqual(self._escreve_spec().returncode, 2)
+
+    def test_rodada_nova_de_emenda_fecha_a_janela_anterior(self):
+        self._abre_emenda(opened_at_seq=3, extra=[{
+            "checkpoint": "emenda", "pbi": self.PBI_PATH, "rodada": 2,
+            "status": "aguardando-po", "opened_at_seq": 6,
+        }])
+        self._seq(9)
+        self.assertEqual(self._escreve_spec().returncode, 2)
 
 
 class BatchLockTest(GuardBase):
@@ -2245,6 +2427,573 @@ class BashGrandeDemaisPorGuardTest(GuardBase):
         os.remove(os.path.join(self.tmp, ".specgate.json"))
         r = self.bash(self._cmd_grande(".specgate/seq"))
         self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+
+PBI = "docs/backlog/02-conversao.md"
+OUTRO_PBI = "docs/backlog/03-cli.md"
+
+
+class ChokepointPorPbiTest(GuardBase):
+    """0.3.0: gate aberto de um PBI não trava mais a fila inteira.
+
+    Até 0.2.0 qualquer gate aberto bloqueava qualquer transição de fase — o
+    que fazia um PBI estacionado parar todos os outros (limite documentado no
+    README). A propriedade que importa continua: nada avança NAQUILO que o PO
+    não decidiu.
+    """
+
+    def _gate(self, checkpoint, pbi=None, status="aguardando-po"):
+        entrada = {"checkpoint": checkpoint, "rodada": 1, "status": status, "opened_at_seq": 5}
+        if pbi:
+            entrada["pbi"] = pbi
+        self.state("gate.json", json.dumps([entrada]))
+
+    def _ativa(self, pbi, fase="testing"):
+        conteudo = f"{fase}:{pbi}" if pbi else fase
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": conteudo},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_gate_de_outro_pbi_nao_trava_este(self):
+        self._gate("ambiguidade", OUTRO_PBI)
+        r = self._ativa(PBI)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_gate_do_proprio_pbi_trava(self):
+        self._gate("ambiguidade", PBI)
+        r = self._ativa(PBI)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_gate_de_backlog_trava_todo_mundo(self):
+        """O contrato do lote inteiro está em jogo: nenhum PBI dele significa
+        nada até o PO decidir o backlog.
+        """
+        self._gate("backlog")
+        r = self._ativa(PBI)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GATE DE PO ABERTO", r.stderr)
+
+    def test_fase_sem_pbi_declarado_cai_no_bloqueio_amplo(self):
+        """Não saber de quem é a transição não pode ser mais permissivo que
+        saber — senão omitir o sufixo viraria a forma de destravar.
+        """
+        self._gate("ambiguidade", OUTRO_PBI)
+        r = self._ativa(None)
+        self.assertEqual(r.returncode, 2)
+
+    def test_limpar_a_fase_cai_no_bloqueio_amplo(self):
+        self._gate("ambiguidade", OUTRO_PBI)
+        r = self._ativa("", fase="")
+        self.assertEqual(r.returncode, 2)
+
+    def test_escrita_por_bash_cai_no_bloqueio_amplo(self):
+        """Num comando Bash o conteúdo pretendido não é inspecionável sem
+        interpretar o shell — sem saber o PBI, vale o lado seguro de 0.2.0.
+        """
+        self._gate("ambiguidade", OUTRO_PBI)
+        r = self.bash(f"printf 'testing:{PBI}' > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+
+    def test_gate_decidido_de_outro_pbi_nao_trava_nada(self):
+        self._gate("ambiguidade", OUTRO_PBI, status="respondido")
+        self.assertEqual(self._ativa(PBI).returncode, 0)
+
+    def test_dois_gates_abertos_so_o_do_pbi_alvo_conta(self):
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "ambiguidade", "pbi": OUTRO_PBI, "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5},
+            {"checkpoint": "aceite", "pbi": "docs/backlog/07-x.md", "rodada": 1,
+             "status": "aguardando-po", "opened_at_seq": 5},
+        ]))
+        self.assertEqual(self._ativa(PBI).returncode, 0)
+        self.assertEqual(self._ativa(OUTRO_PBI).returncode, 2)
+
+    def test_gate_sem_campo_pbi_trava_amplo(self):
+        """Gate sem PBI (formato legado) não pode ser ignorado só porque não
+        dá para associá-lo a um item da fila.
+        """
+        self._gate("testes")
+        self.assertEqual(self._ativa(PBI).returncode, 2)
+
+
+class RedEvidenceTest(GuardBase):
+    """Prova de RED: a suíte precisa falhar ANTES de a implementação começar.
+
+    O buraco que isto fecha: um teste tautológico passa desde o dia zero, o
+    implementer encontra a suíte verde e "termina" sem escrever nada. Antes
+    daqui, o único olho capaz de pegar isso era o revisor de conformidade.
+    """
+
+    def _config(self, test_command, **extra):
+        data = {"test_command": test_command, "source_paths": ["src"], "require_red": True}
+        data.update(extra)
+        self.config(data)
+
+    def _transiciona(self, pbi=PBI):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": f"implementing:{pbi}"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def _red(self):
+        with open(os.path.join(self.tmp, ".specgate", "red.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_suite_verde_antes_de_implementar_bloqueia(self):
+        self._config("true")
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PROVA DE RED FALHOU", r.stderr)
+
+    def test_suite_vermelha_libera_e_registra_a_prova(self):
+        self._config("false")
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertTrue(self._red()[PBI]["proven"])
+        self.assertFalse(self._red()[PBI]["waived"])
+
+    def test_prova_registrada_dispensa_rodar_a_suite_de_novo(self):
+        """O ponto crítico do cache: depois que o código existe, a suíte
+        PASSA — reexigir vermelho a cada reentrada em implementação (volta de
+        uma conformidade reprovada, por exemplo) travaria o fluxo pedindo algo
+        que não pode mais acontecer.
+        """
+        self._config("false")
+        self.assertEqual(self._transiciona().returncode, 0)
+        self._config("true")  # implementação pronta: suíte agora passa
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_rodada_nova_do_gate_de_testes_invalida_a_prova(self):
+        self._config("false")
+        self.assertEqual(self._transiciona().returncode, 0)
+        # Testes reprovados e reescritos: a prova da rodada 1 não vale para a 2.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": PBI, "rodada": 1, "status": "reprovado"},
+            {"checkpoint": "testes", "pbi": PBI, "rodada": 2, "status": "aprovado"},
+        ]))
+        self._config("true")
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PROVA DE RED FALHOU", r.stderr)
+
+    def test_rodada_de_aceite_nova_nao_invalida_a_prova(self):
+        """Aceite reprovado devolve o PBI para implementação, mas os testes
+        continuam os mesmos — exigir RED aqui seria pedir o impossível.
+        """
+        # Ordem do fluxo real: o gate de testes é aprovado ANTES da transição
+        # para implementação, então a prova nasce carimbada com a rodada dele.
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": PBI, "rodada": 1, "status": "aprovado"},
+        ]))
+        self._config("false")
+        self.assertEqual(self._transiciona().returncode, 0)
+        # Aceite reprovado: o PBI volta para implementação com os MESMOS
+        # testes. (Sem gate aberto na fixture — um gate 'aguardando-po'
+        # barraria a transição no chokepoint de PO, antes de chegar ao RED.)
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "testes", "pbi": PBI, "rodada": 1, "status": "aprovado"},
+            {"checkpoint": "aceite", "pbi": PBI, "rodada": 1, "status": "reprovado"},
+        ]))
+        self._config("true")
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_gate_de_red_aprovado_pelo_po_libera_o_verde(self):
+        """Falso-verde legítimo (comportamento já existe): não é parede, é
+        pergunta — e a resposta do PO destrava.
+        """
+        self._config("true")
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "red", "pbi": PBI, "rodada": 1, "status": "aprovado", "opened_at_seq": 3},
+        ]))
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+        self.assertTrue(self._red()[PBI]["waived"])
+
+    def test_gate_de_red_de_outro_pbi_nao_libera(self):
+        self._config("true")
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "red", "pbi": "docs/backlog/07-outro.md", "rodada": 1,
+             "status": "aprovado", "opened_at_seq": 3},
+        ]))
+        self.assertEqual(self._transiciona().returncode, 2)
+
+    def test_gate_de_red_ainda_aguardando_po_nao_libera(self):
+        self._config("true")
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "red", "pbi": PBI, "rodada": 1, "status": "aguardando-po", "opened_at_seq": 3},
+        ]))
+        # Com gate aberto o chokepoint de PO já barra antes, e é ele quem
+        # responde — o importante é que a transição NÃO acontece.
+        self.assertEqual(self._transiciona().returncode, 2)
+
+    def test_require_red_false_desliga(self):
+        self._config("true", require_red=False)
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_sem_test_command_nao_ha_vermelho_a_provar(self):
+        self.config({"source_paths": ["src"], "require_red": True})
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_transicao_para_testing_nao_dispara(self):
+        self._config("true")
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": "testing"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_limpar_a_fase_nao_dispara(self):
+        self._config("true")
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": ""},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_escrita_em_outro_arquivo_nao_dispara(self):
+        self._config("true")
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "notas.md", "content": "implementing:algo"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_transicao_por_bash_tambem_e_verificada(self):
+        self._config("true")
+        r = self.bash(f"printf 'implementing:{PBI}' > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PROVA DE RED FALHOU", r.stderr)
+
+    def test_formato_antigo_sem_pbi_ainda_e_verificado(self):
+        self._config("true")
+        r = self.bash("printf 'implementing' > .specgate/phase")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PROVA DE RED FALHOU", r.stderr)
+
+    def test_timeout_da_suite_bloqueia(self):
+        self._config("sleep 5", test_timeout_seconds=1)
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("excedeu o tempo limite", r.stderr)
+
+    def test_comando_grande_mencionando_phase_e_implementing_bloqueia(self):
+        self._config("true")
+        recheio = "x" * (64 * 1024)
+        r = self.bash(f"printf 'implementing' > .specgate/phase # {recheio}")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("COMANDO GRANDE DEMAIS PARA VERIFICAR", r.stderr)
+
+    def test_comando_grande_alheio_a_fase_e_permitido(self):
+        self._config("true")
+        recheio = "x" * (64 * 1024)
+        r = self.bash(f"printf 'oi' > /tmp/qualquer.txt # {recheio}")
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_sem_specgate_json_e_inerte(self):
+        self._config("true")
+        os.remove(os.path.join(self.tmp, ".specgate.json"))
+        self.assertEqual(self._transiciona().returncode, 0)
+
+
+class TraceTest(GuardBase):
+    """Rastreabilidade requisito -> teste, verificada na entrada da
+    implementação. Antes daqui o mapa de cobertura era prosa no relatório do
+    blackbox-tester: consumido uma vez e perdido com a sessão.
+    """
+
+    SPEC = """# Conversão
+## Comportamentos
+1. [C1] dado 1 metro, quando converter, então 3.28 pés
+2. [C2] dado 0, quando converter, então 0
+## Casos de erro
+1. [E1] dado "abc", quando converter, então erro
+"""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp, "docs", "backlog"), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "tests"), exist_ok=True)
+        self._escreve(PBI, self.SPEC)
+        self._escreve("tests/test_conv.py", "def test_metros_para_pes():\n    pass\n")
+
+    def _escreve(self, rel, texto):
+        caminho = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        with open(caminho, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+
+    def _trace(self, data):
+        self._escreve("docs/traceability.json", json.dumps(data))
+
+    def _completo(self):
+        return {
+            "02-conversao#C1": {"tests": ["tests/test_conv.py::test_metros_para_pes"],
+                                "status": "covered"},
+            "02-conversao#C2": {"tests": ["tests/test_conv.py::test_metros_para_pes"],
+                                "status": "covered"},
+            "02-conversao#E1": {"tests": ["tests/test_conv.py::test_metros_para_pes"],
+                                "status": "covered"},
+        }
+
+    def _transiciona(self):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": f"implementing:{PBI}"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def test_matriz_completa_libera(self):
+        self._trace(self._completo())
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_requisito_sem_entrada_bloqueia(self):
+        parcial = self._completo()
+        del parcial["02-conversao#E1"]
+        self._trace(parcial)
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("RASTREABILIDADE INCOMPLETA", r.stderr)
+        self.assertIn("02-conversao#E1", r.stderr)
+
+    def test_matriz_ausente_bloqueia_listando_todos(self):
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        for rid in ("C1", "C2", "E1"):
+            self.assertIn(f"02-conversao#{rid}", r.stderr)
+
+    def test_requisito_declarado_sem_cobertura_passa(self):
+        """O gate proíbe o silêncio sobre o requisito, não a ausência de
+        cobertura — essa decisão é do PO, desde que fique escrita.
+        """
+        parcial = self._completo()
+        parcial["02-conversao#E1"] = {"tests": [], "status": "uncovered",
+                                      "why": "erro de entrada fica no PBI 05"}
+        self._trace(parcial)
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_teste_inexistente_no_arquivo_bloqueia(self):
+        quebrado = self._completo()
+        quebrado["02-conversao#C1"] = {"tests": ["tests/test_conv.py::test_que_nao_existe"],
+                                       "status": "covered"}
+        self._trace(quebrado)
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("test_que_nao_existe", r.stderr)
+
+    def test_arquivo_de_teste_inexistente_bloqueia(self):
+        quebrado = self._completo()
+        quebrado["02-conversao#C1"] = {"tests": ["tests/test_sumiu.py::test_x"], "status": "covered"}
+        self._trace(quebrado)
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("tests/test_sumiu.py", r.stderr)
+
+    def test_referencia_a_arquivo_inteiro_e_aceita(self):
+        so_arquivo = {k: {"tests": ["tests/test_conv.py"], "status": "covered"}
+                      for k in self._completo()}
+        self._trace(so_arquivo)
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_spec_sem_ids_deixa_o_guard_inerte(self):
+        """Compatibilidade: a rastreabilidade passa a ser exigida quando a
+        spec passa a declarar requisitos, não por uma data de corte.
+        """
+        self._escreve(PBI, "# Conversão\n## Comportamentos\n1. dado 1 metro, então 3.28 pés\n")
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_require_trace_false_desliga(self):
+        self.config({"test_command": "true", "source_paths": ["src"],
+                     "require_red": False, "require_trace": False})
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_matriz_corrompida_bloqueia_como_ausente(self):
+        self._escreve("docs/traceability.json", "{lixo")
+        r = self._transiciona()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("RASTREABILIDADE INCOMPLETA", r.stderr)
+
+    def test_transicao_para_testing_nao_dispara(self):
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".specgate/phase", "content": "testing"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_caminho_customizado_da_matriz_e_respeitado(self):
+        self.config({"test_command": "true", "source_paths": ["src"], "require_red": False,
+                     "traceability_path": "docs/rastro.json"})
+        self._escreve("docs/rastro.json", json.dumps(self._completo()))
+        self.assertEqual(self._transiciona().returncode, 0)
+
+    def test_id_repetido_na_spec_conta_uma_vez(self):
+        self._escreve(PBI, self.SPEC + "\nver [C1] acima\n")
+        self._trace(self._completo())
+        self.assertEqual(self._transiciona().returncode, 0)
+
+
+class AttemptsTest(GuardBase):
+    """Teto de tentativas contado pelo hook, não declarado pelo agente.
+
+    Antes daqui, max_fix_attempts existia só como texto no prompt do
+    implementer: a regra "término mecânico, nunca autodeclarado" valia para o
+    verde (gate de regressão) e não valia para o teto.
+    """
+
+    def _config(self, **extra):
+        data = {"test_command": "pytest -q", "source_paths": ["src"],
+                "require_red": False, "max_fix_attempts": 3}
+        data.update(extra)
+        self.config(data)
+
+    def _implementando(self, pbi=PBI):
+        self.state("phase", f"implementing:{pbi}")
+
+    def _roda_suite(self, vezes=1, cmd="pytest -q"):
+        for _ in range(vezes):
+            self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def _edita_fonte(self):
+        return run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/conversao.py", "content": "x = 1"},
+            "cwd": self.tmp,
+        }, self.tmp)
+
+    def _attempts(self):
+        with open(os.path.join(self.tmp, ".specgate", "attempts.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def setUp(self):
+        super().setUp()
+        self._config()
+        self._implementando()
+
+    def test_execucao_da_suite_incrementa_o_contador(self):
+        self._roda_suite(2)
+        self.assertEqual(self._attempts()["count"], 2)
+        self.assertEqual(self._attempts()["pbi"], PBI)
+
+    def test_abaixo_do_teto_edicao_de_fonte_e_permitida(self):
+        self._roda_suite(2)
+        self.assertEqual(self._edita_fonte().returncode, 0)
+
+    def test_no_teto_edicao_de_fonte_e_bloqueada(self):
+        self._roda_suite(3)
+        r = self._edita_fonte()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("TETO DE TENTATIVAS ATINGIDO", r.stderr)
+
+    def test_no_teto_rodar_a_suite_continua_liberado(self):
+        """É assim que o estado real (quais testes ainda falham) chega ao
+        relatório do PO — bloquear a suíte no teto esconderia justamente a
+        informação que a parada precisa entregar.
+        """
+        self._roda_suite(4)
+        self.assertEqual(self.bash("pytest -q").returncode, 0)
+
+    def test_no_teto_edicao_fora_de_source_paths_e_permitida(self):
+        self._roda_suite(3)
+        r = run_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "notas.md", "content": "hipótese"},
+            "cwd": self.tmp,
+        }, self.tmp)
+        self.assertEqual(r.returncode, 0, msg=f"stderr: {r.stderr}")
+
+    def test_rodada_nova_de_gate_do_pbi_zera_o_contador(self):
+        self._roda_suite(3)
+        self.assertEqual(self._edita_fonte().returncode, 2)
+        self.state("gate.json", json.dumps([
+            {"checkpoint": "aceite", "pbi": PBI, "rodada": 1, "status": "reprovado"},
+            {"checkpoint": "aceite", "pbi": PBI, "rodada": 2, "status": "aprovado"},
+        ]))
+        self.assertEqual(self._edita_fonte().returncode, 0)
+
+    def test_contador_de_outro_pbi_nao_conta_contra_este(self):
+        self._roda_suite(3)
+        self._implementando("docs/backlog/03-outro.md")
+        self.assertEqual(self._edita_fonte().returncode, 0)
+
+    def test_fase_sem_pbi_deixa_o_contador_inerte(self):
+        self.state("phase", "implementing")
+        self._roda_suite(5)
+        self.assertEqual(self._edita_fonte().returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".specgate", "attempts.json")))
+
+    def test_fora_da_fase_de_implementacao_nada_conta(self):
+        self.state("phase", "")
+        self._roda_suite(5)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".specgate", "attempts.json")))
+
+    def test_max_fix_attempts_zero_desliga_o_teto(self):
+        self._config(max_fix_attempts=0)
+        self._roda_suite(5)
+        self.assertEqual(self._edita_fonte().returncode, 0)
+
+    def test_comando_alheio_nao_incrementa(self):
+        self.assertEqual(self.bash("git status").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".specgate", "attempts.json")))
+
+    def test_runner_reconhecido_mesmo_com_argumentos_diferentes(self):
+        """`pytest tests/test_x.py -k caso` é a mesma suíte do test_command
+        configurado (`pytest -q`) rodada em recorte menor — contar só a
+        invocação literal deixaria o teto trivial de contornar sem querer.
+        """
+        self._roda_suite(1, cmd="pytest tests/test_x.py -k caso")
+        self.assertEqual(self._attempts()["count"], 1)
+
+    def test_wrapper_python_dash_m_nao_confunde_o_token(self):
+        self._config(test_command="python3 -m pytest -q")
+        self._roda_suite(1, cmd="python3 -m pytest -q tests/")
+        self.assertEqual(self._attempts()["count"], 1)
+
+    def test_script_python_qualquer_nao_conta_como_suite(self):
+        self._config(test_command="python3 -m pytest -q")
+        self.assertEqual(self.bash("python3 scripts/seed.py").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".specgate", "attempts.json")))
+
+    def test_aviso_de_troca_de_olhos_na_metade_do_teto(self):
+        """Metade do teto é onde trocar de implementer ainda é barato — o
+        aviso precisa chegar ANTES do bloqueio, não junto com ele.
+        """
+        r1 = self.bash("pytest -q")
+        self.assertNotIn("Tentativa", r1.stdout)
+        r2 = self.bash("pytest -q")  # teto 3 -> aviso na 2ª
+        self.assertEqual(r2.returncode, 0)
+        self.assertIn("Tentativa 2/3", r2.stdout)
+        self.assertIn("contexto limpo", r2.stdout)
+
+    def test_aviso_sai_uma_vez_so(self):
+        for _ in range(2):
+            self.bash("pytest -q")
+        r = self.bash("pytest -q")
+        self.assertNotIn("Tentativa", r.stdout)
+
+    def test_aviso_e_json_valido_com_system_message(self):
+        self.bash("pytest -q")
+        r = self.bash("pytest -q")
+        self.assertEqual(list(json.loads(r.stdout).keys()), ["systemMessage"])
+
+    def test_token_generico_exige_o_comando_inteiro(self):
+        """`npm test` deixaria só "test" como token significativo, que casa
+        com qualquer `ls test` — nesse caso o guard exige o test_command
+        inteiro em vez de inflar o contador contra o PBI.
+        """
+        self._config(test_command="npm test")
+        self.assertEqual(self.bash("ls test").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".specgate", "attempts.json")))
+        self._roda_suite(1, cmd="npm test")
+        self.assertEqual(self._attempts()["count"], 1)
 
 
 if __name__ == "__main__":

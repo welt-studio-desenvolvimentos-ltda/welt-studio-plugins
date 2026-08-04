@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "comfy-local",
+  "displayName": "ComfyUI Local",
+  "version": "0.1.0",
+  "description": "Dirige um ComfyUI local por MCP: introspecção da instalação viva, construção de workflows por fragmentos, execução e coleta de saídas.",
+  "author": {
+    "name": "Welt Studio"
+  },
+  "license": "MIT",
+  "keywords": ["comfyui", "mcp", "image-generation", "3d", "workflow"],
+  "defaultEnabled": false,
+  "userConfig": {
+    "python_path": {
+      "type": "string",
+      "title": "Interpretador Python",
+      "description": "Python 3.10 ou superior usado para subir o servidor. Aceita 'python' se já estiver no PATH, ou um caminho absoluto como C:\\comfy\\env\\Scripts\\python.exe",
+      "default": "python",
+      "required": true
+    },
+    "comfy_bin": {
+      "type": "file",
+      "title": "Executável comfy",
+      "description": "Caminho absoluto do comfy-cli. Windows: C:\\comfy\\env\\Scripts\\comfy.exe. Linux e macOS: /caminho/venv/bin/comfy. Instale antes com pip install comfy-cli",
+      "required": true
+    },
+    "comfy_url": {
+      "type": "string",
+      "title": "Endereço do ComfyUI",
+      "description": "Deixe vazio para o padrão 127.0.0.1:8188. Preencha se o ComfyUI roda em outra porta ou outra máquina, no formato http://host:porta",
+      "required": false
+    }
+  }
+}
