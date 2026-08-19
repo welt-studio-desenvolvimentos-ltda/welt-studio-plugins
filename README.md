@@ -4,38 +4,42 @@ A collection of Claude Code plugins for enhanced development experience.
 
 ## Available Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| `typescript-lsp` | TypeScript/JavaScript Language Server integration |
-| `python-lsp` | Python Language Server integration (Pyright) |
-| `hookify` | User-configurable hooks from .local.md files (patched) |
+| Plugin | Version | Description |
+|--------|---------|-------------|
+| `typescript-lsp` | 1.0.0 | TypeScript/JavaScript Language Server integration |
+| `python-lsp` | 1.0.0 | Python Language Server integration (Pyright) |
+| `hookify` | 0.1.4 | User-configurable hooks from Markdown rule files (patched fork) |
+| `spec-gate` | 0.3.0 | Spec-driven flow gated by the product owner: six named phases and six human decision gates |
+| `comfy-local` | 0.1.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution and output collection |
+| `auditoria` | 1.0.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
 
 ## Installation
 
 ### Add the Marketplace
 
 ```bash
-# If hosted on GitHub
-/plugin marketplace add welt-studio/welt-studio-plugins
+# From GitHub
+/plugin marketplace add welt-studio-desenvolvimentos-ltda/welt-studio-plugins
 
-# Or from local path
-/plugin marketplace add ~/.claude/plugins/repos/welt-studio-plugins
+# Or from a local clone
+/plugin marketplace add /path/to/welt-studio-plugins
 ```
 
 ### Install Plugins
 
 ```bash
-# Install TypeScript LSP
 /plugin install typescript-lsp@welt-studio-plugins
-
-# Install Python LSP
 /plugin install python-lsp@welt-studio-plugins
-
-# Install Hookify (patched)
 /plugin install hookify@welt-studio-plugins
+/plugin install spec-gate@welt-studio-plugins
+/plugin install comfy-local@welt-studio-plugins
+/plugin install auditoria@welt-studio-plugins
 ```
 
 ## Prerequisites
+
+Only some plugins need anything installed. `hookify`, `spec-gate` and `auditoria` run on what
+Claude Code already provides.
 
 ### TypeScript LSP
 
@@ -51,16 +55,44 @@ pip install pyright
 npm install -g pyright
 ```
 
+### comfy-local
+
+Requires `comfy-cli` in its own virtualenv and a ComfyUI workspace. The plugin installs
+disabled on purpose, since it connects to an external service. See
+[`plugins/comfy-local/README.md`](plugins/comfy-local/README.md).
+
+### auditoria
+
+No dependency to install, but the README documents one manual step: a permission rule in your
+`~/.claude/settings.json` so Claude asks before dispatching the auditor on its own. See
+[`plugins/auditoria/README.md`](plugins/auditoria/README.md).
+
 ## Plugin Development
 
-Each plugin follows the standard Claude Code plugin structure:
+Every plugin lives in `plugins/<name>/` and is registered in
+[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json). Only `plugin.json` is
+required; the rest is whatever the plugin actually ships:
 
 ```
 plugins/<plugin-name>/
 ├── .claude-plugin/
-│   └── plugin.json    # Plugin metadata
-├── .lsp.json          # LSP configuration (for LSP plugins)
-└── README.md          # Documentation
+│   └── plugin.json     # Required: identity (name, version, description, author)
+├── .lsp.json           # LSP server configuration
+├── hooks/hooks.json    # Hook event wiring
+├── commands/*.md       # Slash commands
+├── agents/*.md         # Subagent definitions
+├── skills/*/SKILL.md   # Skills
+└── README.md           # Documentation
+```
+
+Directory conventions are picked up automatically — declaring `agents`, `skills` or `hooks` in
+`plugin.json` is optional, and the `agents` field takes file paths rather than a directory.
+
+Validate before committing:
+
+```bash
+claude plugin validate plugins/<name>     # a single plugin
+claude plugin validate .                  # the marketplace and every entry
 ```
 
 ## Author
