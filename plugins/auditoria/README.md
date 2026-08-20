@@ -12,13 +12,14 @@ ficam fora do assunto.
 
 ## Pré requisitos
 
-- **Claude Code recente** — o agente usa `memory:` de subagente e a skill usa
-  `disable-model-invocation`. Tudo aqui foi medido na 2.1.236; não há piso de versão testado.
+- **Claude Code recente** — o agente usa `memory:` e `background:` de subagente, e a skill usa
+  `disable-model-invocation`. Tudo aqui foi medido na 2.1.236 e na 2.1.237; não há piso de
+  versão testado.
 - **`git`** é opcional. Com repositório o agente parte de `git status`, `git diff` e
   `git log`; sem ele, procura o que foi tocado há pouco com `find -newermt` e declara esse
   limite no veredito.
 
-O plugin não tem hooks, não roda nada em background e não depende de binário externo.
+O plugin não tem hooks e não depende de binário externo.
 
 ## Instalação
 
@@ -38,8 +39,23 @@ Depois decida se quer confirmação antes de cada auditoria. A regra vai no seu
 }
 ```
 
-Cada rodada custa da ordem de 100k tokens e vários minutos, e sem a regra o Claude pode
-despachar o auditor por conta própria — foi o que aconteceu em 19/08/2026, seis vezes seguidas.
+Cada rodada custa de 1,6 a 3,0 milhões de tokens faturáveis e de 2 a 7 minutos, e sem a regra o
+Claude pode despachar o auditor por conta própria — foi o que aconteceu em 19/08/2026, seis
+vezes seguidas.
+
+O grosso desse volume é cache read, cobrado a 0,1× do input, então o custo em dinheiro fica
+bem abaixo do que o número de tokens sugere. Medido em três auditorias completas do próprio
+plugin, uma por modelo (`model: inherit` — o auditor roda no modelo da sessão):
+
+| Modelo | Tempo | Turnos | Chamadas Bash | Tokens faturáveis | ≈ USD via API |
+|---|---|---|---|---|---|
+| Opus 5 | 5m42 | 43 | 15 | 1,93 M | 2,61 |
+| Sonnet 5 | 6m37 | 52 | 21 | 3,05 M | 1,61 |
+| Haiku 4.5 | 2m25 | 40 | 12 | 1,62 M | 0,44 |
+
+Repare que o Sonnet gastou **mais** tokens que o Opus, em mais turnos: trocar para um modelo
+mais barato encurta a conta, não o trabalho. O Haiku fecha em 2 minutos porque audita mais
+raso.
 
 **O `*` não é enfeite.** O valor enviado vem qualificado pelo plugin — `auditoria:auditor`, não
 `auditor` — e a comparação é literal. Sem o curinga a regra não casa nada e fica inerte: você lê
@@ -68,6 +84,30 @@ Também dá para despachar por `@auditor`, mas prefira a skill: ela entrega o co
 pedido, que o `@auditor` solto não tem. O conjunto de ferramentas que o agente recebe é decidido
 pelo harness em tempo de despacho, e o `agents/auditor.md` manda ele conferir o que tem antes de
 concluir qualquer coisa — o plugin não promete `LSP` em nenhum dos dois caminhos.
+
+## A auditoria roda em background
+
+O agente declara `background: true`, então o `/auditar` devolve o turno na hora e a auditoria
+corre em segundo plano. O veredito chega depois, por notificação, e a `SKILL.md` manda entregá-lo
+íntegro no turno em que chegar. Acompanhe e cancele por `/tasks`.
+
+Sem esse campo quem decide foreground ou background é o Claude, tarefa a tarefa — e com a skill
+pedindo o veredito de volta, ele tende a segurar o turno. Para forçar o modo síncrono de novo,
+suba `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` antes de abrir o Claude Code; essa variável vence
+o frontmatter. No sentido contrário, com fork mode ligado o Claude Code já roda em background os
+subagentes que o Claude despacha, com ou sem o campo.
+
+**A exceção sem escape:** um teammate em processo não despacha agente com `background: true` — o
+despacho falha na hora com `In-process teammates cannot spawn background agents`, e a variável
+acima não contorna, porque essa checagem vem antes dela. Só aparece em sessão com teammates; do
+`/auditar` na sessão principal, nunca.
+
+**Pré-aprove os comandos de verificação.** O auditor prova afirmação executando: foram de 12 a 21
+chamadas de `Bash` nas três auditorias medidas, entre teste, lint, type-check e `git`. Comando
+fora do `allow` vira prompt de permissão, e em background a auditoria fica parada esperando você
+responder — o prompt aparece na sessão principal, mas não interrompe o que você está fazendo, e
+passa fácil despercebido. Vale somar ao `allow` do projeto os comandos de verificação que a sua
+suíte usa.
 
 ## O que compõe o plugin
 

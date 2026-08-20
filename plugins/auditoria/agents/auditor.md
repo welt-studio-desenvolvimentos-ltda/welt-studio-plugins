@@ -10,6 +10,7 @@ disallowedTools: Agent, mcp__*
 model: inherit
 effort: high
 memory: user
+background: true
 color: red
 ---
 

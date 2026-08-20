@@ -43,5 +43,20 @@ tratado.
 "testado" existe justamente porque agora alguém vai conferir. Suavizar aqui faz o agente auditar
 uma versão que você acabou de inventar, e a auditoria passa a não medir nada.
 
-Despache uma vez. Entregue o veredito ao usuário como ele veio, sem editar e sem responder às
-críticas no mesmo turno.
+## O auditor roda em background — quase sempre
+
+Despache uma vez. No caminho normal o despacho **volta na hora e volta vazio**: o veredito chega
+depois, num turno seguinte, como notificação de tarefa concluída. O modo síncrono continua
+existindo — com background desligado no ambiente, o veredito volta no próprio resultado do
+despacho. Olhe o que voltou antes de decidir em qual dos dois casos você está.
+
+**Se voltou vazio**, não anuncie resultado que você não tem. Nada de prever o veredito, resumir
+o que acha que ele vai achar, ou adiantar defesa das suas escolhas. Se o usuário perguntar antes
+da hora, diga que a auditoria ainda está rodando.
+
+**O turno em que o veredito chegar é a entrega** — seja o do despacho, seja o da notificação.
+Repasse íntegro, como ele veio, sem editar, sem resumir e sem responder às críticas no mesmo
+turno. Receber o veredito e seguir sem dizer nada é o mesmo que não ter auditado: o usuário pediu
+a auditoria para ler o que ela diz.
+
+Corrigir o que foi apontado é outro pedido. Espere a decisão do usuário.
