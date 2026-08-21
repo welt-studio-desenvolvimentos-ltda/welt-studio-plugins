@@ -27,7 +27,15 @@ sozinho.
 X", "os testes passam", "corrigi Y", "não quebra nada". Cada uma é uma afirmação que ele vai
 tentar derrubar.
 
-**4. Onde está o trabalho.** Arquivos tocados, e se há diff, staged, ou commit recente.
+**4. Onde está o trabalho.** O alvo é o **working tree**: o que ainda não foi commitado, staged
+ou não. Liste os arquivos tocados e diga que há `git diff` e `git diff --staged` para ele ler.
+
+A auditoria acontece antes do commit — é para isso que ela serve. Se parte do trabalho desta
+sessão já foi commitada, ela está fora do alvo por padrão: diga que existe e que ficou de fora,
+em uma linha, sem descrevê-la. Só inclua no alvo se o usuário pedir.
+
+Com o working tree limpo e nada por commitar, não invente alvo: diga isso ao usuário e não
+despache.
 
 ## Três regras que decidem se a auditoria vale alguma coisa
 
@@ -55,8 +63,32 @@ o que acha que ele vai achar, ou adiantar defesa das suas escolhas. Se o usuári
 da hora, diga que a auditoria ainda está rodando.
 
 **O turno em que o veredito chegar é a entrega** — seja o do despacho, seja o da notificação.
-Repasse íntegro, como ele veio, sem editar, sem resumir e sem responder às críticas no mesmo
-turno. Receber o veredito e seguir sem dizer nada é o mesmo que não ter auditado: o usuário pediu
-a auditoria para ler o que ela diz.
+Repasse íntegro, como ele veio, sem editar e sem resumir — e sem misturar defesa sua no repasse.
+Receber o veredito e seguir sem dizer nada é o mesmo que não ter auditado: o usuário pediu a
+auditoria para ler o que ela diz. O que vem depois do repasse, no mesmo turno, é a seção
+seguinte.
 
-Corrigir o que foi apontado é outro pedido. Espere a decisão do usuário.
+## Depois de entregar, conserte — mas confira cada achado antes
+
+Entregue primeiro. Só então trabalhe o veredito, no mesmo turno, sem esperar nova ordem.
+
+**Cada achado é uma alegação até você conferir**, exatamente como as suas eram para o auditor.
+Ele erra como qualquer um: infere assinatura de comando pelo comando irmão, classifica amostra
+pelo rótulo em vez do dado, chega a um número que a verificação não reproduz. Aplicar sem checar
+troca o seu erro pelo dele, e o resultado continua errado — só que agora com um veredito
+carimbando.
+
+Então, achado por achado:
+
+- **confirme na fonte** — o arquivo apontado, o fonte da dependência, o comando executado;
+- **corrija o que se sustentar**, começando pelos BLOQUEADORES;
+- **diga o que não se sustentou, com o que você encontrou no lugar.** Um achado derrubado com
+  evidência vale tanto quanto um corrigido, e é o que impede a rodada seguinte de recobrar a
+  mesma coisa.
+
+Não negocie severidade e não rebata — verificar é diferente de discordar.
+Um BLOQUEADOR que você conferiu e confirmou se conserta, ponto; um que a fonte contradiz vira
+uma linha dizendo o que a fonte diz.
+
+O escopo é o que o veredito aponta. Melhoria adjacente que você notou pelo caminho continua
+sendo outro pedido: liste para o usuário e siga.

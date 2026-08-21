@@ -2,7 +2,7 @@
 
 Plugin de Claude Code que dirige um ComfyUI local por MCP.
 
-Empacota um servidor MCP com 25 ferramentas mais uma skill que ensina o
+Empacota um servidor MCP com 38 ferramentas mais uma skill que ensina o
 fluxo de trabalho. O servidor é um wrapper sobre o `comfy-cli`, que emite
 um envelope JSON estável em todo comando, incluindo um campo `hint` nos
 erros dizendo como corrigir.
@@ -59,13 +59,21 @@ variável `MCP_TIMEOUT` antes de abrir o Claude Code.
 | Grupo | Ferramentas |
 |---|---|
 | Estado | `server_info`, `launch_server`, `stop_server` |
-| Execução | `validate_workflow`, `run_workflow`, `job_status`, `job_wait`, `fetch_outputs` |
-| Introspecção | `search_nodes`, `show_node`, `list_nodes`, `node_neighbors`, `node_path`, `search_models` |
-| Construção | `list_templates`, `fetch_template`, `workflow_slots`, `set_workflow_slots`, `compose_workflow`, `decompose_workflow`, `vary_workflow`, `list_fragments` |
+| Execução | `validate_workflow`, `run_workflow`, `job_status`, `job_wait`, `job_list`, `job_watch`, `job_cancel`, `fetch_outputs` |
+| Diagnóstico | `system_stats`, `free_memory`, `server_logs` |
+| Introspecção | `search_nodes`, `show_node`, `list_nodes`, `node_neighbors`, `node_path`, `search_models`, `show_model` |
+| Construção | `list_templates`, `show_template`, `check_template`, `fetch_template`, `workflow_slots`, `set_workflow_slots`, `workflow_notes`, `compose_workflow`, `decompose_workflow`, `vary_workflow`, `list_fragments` |
+| Dependências | `download_model`, `download_status`, `install_node` |
 | Arquivos | `upload_files`, `preview_media` |
 | Metodologia | `read_methodology` |
 
 Todas com o prefixo `comfy_`.
+
+Duas mudam a instalação e pedem confirmação do usuário antes:
+`comfy_download_model` grava gigabytes em disco e `comfy_install_node` instala
+código de terceiro no interpretador do ComfyUI. Uma terceira não mexe na
+instalação mas também destrói trabalho: `comfy_job_cancel` descarta o que um
+job em andamento já produziu.
 
 ## Variáveis de ambiente
 
@@ -83,11 +91,25 @@ Além das três da configuração do plugin, o servidor lê:
 `port` sobrescrevem esse padrão chamada a chamada; um valor sem forma de
 endereço é ignorado em silêncio e a CLI usa os defaults dela.
 
-Três ferramentas ficam de fora: `comfy_upload_files`, `comfy_fetch_outputs`
-e `comfy_search_models`. Os comandos correspondentes do `comfy-cli` não
-aceitam `--host` nem `--port`, e resolvem o servidor pelo workspace ativo.
+Quinze das trinta e oito ferramentas endereçam o servidor por `--host` e
+`--port`. As outras vinte e três não: seis resolvem o servidor pelo workspace
+ativo — `comfy_upload_files`, `comfy_fetch_outputs`, `comfy_search_models`,
+`comfy_show_model`, `comfy_system_stats` e `comfy_free_memory` —, outras falam
+com a galeria de templates, e as demais mexem em arquivo local ou no próprio
+workspace: `comfy_server_info`, `comfy_launch_server` e `comfy_stop_server`
+agem sobre o ComfyUI do workspace ativo, e `comfy_download_model`,
+`comfy_download_status` e `comfy_install_node` gravam dentro dele.
+
 Se o seu ComfyUI não está no endereço padrão, aponte o workspace com
-`comfy set-default`.
+`comfy set-default`. Sem isso, tudo que resolve pelo workspace mira no lugar
+errado enquanto as quinze roteadas acertam, que é o tipo de falha que custa a
+ser entendida.
+
+`comfy_server_logs` é um caso à parte: o comando não aceita `--host`, mas o
+`--port` seleciona de qual instância ler o log. Ele respeita a porta de
+`COMFY_LOCAL_URL` quando você não passa uma — sem isso, um ComfyUI fora da
+8188 teria o log lido da instância errada bem na hora de diagnosticar
+uma falha.
 
 ## Notas
 

@@ -10,8 +10,8 @@ A collection of Claude Code plugins for enhanced development experience.
 | `python-lsp` | 1.0.0 | Python Language Server integration (Pyright) |
 | `hookify` | 0.1.4 | User-configurable hooks from Markdown rule files (patched fork) |
 | `spec-gate` | 0.3.0 | Spec-driven flow gated by the product owner: six named phases and six human decision gates |
-| `comfy-local` | 0.1.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution and output collection |
-| `auditoria` | 1.1.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
+| `comfy-local` | 0.2.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution, job and VRAM diagnostics, and output collection |
+| `auditoria` | 1.2.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
 
 ## Installation
 

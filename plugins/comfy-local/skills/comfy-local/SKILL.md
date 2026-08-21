@@ -65,6 +65,12 @@ galeria já tem algo com a forma certa, comece dali. Para um teste rápido,
 ajuste os slots e rode. Para algo que vai crescer, projete em fragmento
 antes de editar.
 
+Antes de baixar, duas checagens que evitam retrabalho: `comfy_check_template`
+diz se ele roda **nesta** instalação, e `comfy_show_template` mostra a ficha
+sem gravar arquivo. Depois de baixar, `comfy_workflow_notes` lê o que o autor
+deixou escrito no grafo — palavra de disparo de LoRA, faixa de CFG, resolução
+esperada. Ignorar essas notas não dá erro: dá imagem ruim.
+
 **Fragmento e blueprint.** Este é o caminho padrão para qualquer workflow
 que você vai estender, variar ou reaproveitar. Use
 `comfy_decompose_workflow` para transformar um template que funciona em
@@ -92,6 +98,36 @@ aguarde todas juntas com `comfy_job_wait`.
 Workflow de imagem para imagem precisa dos arquivos de entrada no servidor
 primeiro, via `comfy_upload_files`. Use os nomes que ele devolve nos nodes
 de carregamento.
+
+## Quando algo dá errado
+
+Não fique adivinhando pelo sintoma. Cada pergunta tem uma ferramenta:
+
+| Situação | Ferramenta |
+|---|---|
+| O que está rodando agora? Perdi o prompt_id | `comfy_job_list` |
+| Falhou e o erro não explica | `comfy_server_logs` |
+| Travou, ou os parâmetros estavam errados | `comfy_job_cancel` |
+| Falhou e quero saber em que node parou | `comfy_job_watch` |
+| Suspeita de falta de VRAM | `comfy_system_stats` |
+| Confirmada a falta de VRAM | `comfy_free_memory` |
+
+`comfy_free_memory` descarrega os modelos sem apagar nada do disco, e o
+próximo job recarrega o que precisar. Tente isso antes de derrubar o servidor
+com `comfy_stop_server`, que leva a fila inteira junto.
+
+Duas coisas sobre ele: vale para o servidor inteiro, não para um workflow — o
+ComfyUI já gerencia memória por execução sozinho, e este é o caso em que o
+automático não bastou. E o efeito entra pela fila, então com job rodando ele
+só se aplica depois; medir a VRAM no ato pode não mostrar diferença.
+
+`comfy_job_watch` não é um `comfy_job_wait` melhorado: o wait responde
+"terminou?", o watch devolve o caminho percorrido. Use para diagnóstico, não
+para esperar.
+
+Falta de dependência se resolve com `comfy_install_node` e
+`comfy_download_model`, mas **os dois mudam a instalação da pessoa** — pergunte
+antes. Custom node novo só aparece depois de reiniciar o ComfyUI.
 
 ## Mostrar o resultado
 

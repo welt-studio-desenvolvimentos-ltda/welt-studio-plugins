@@ -1,7 +1,7 @@
 {
   "name": "auditoria",
   "displayName": "Auditoria",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Auditor adversarial: confronta quem construiu em duas frentes — evidência (toda afirmação de 'implementei/testei/funciona' é verificada de forma independente) e escolhas (por que assim e não de outro jeito). Régua de aceite com severidade e limite de três rodadas.",
   "author": {
     "name": "Welt Studio Desenvolvimentos LTDA",

@@ -537,7 +537,11 @@ async def comfy_validate_workflow(params: ValidateInput) -> str:
         str: envelope JSON. Em caso de falha, o campo error.details costuma
             trazer `close_matches` com o nome correto do node.
     """
-    args = ["validate", "--workflow", params.workflow_path]
+    # `comfy validate` de nível superior está marcado [DEPRECATED] na CLI.
+    # O caminho vivo é o subcomando de workflow, que recebe o caminho por
+    # --workflow e não por posicional, ao contrário dos irmãos dele
+    # (slots, set-slot, compose, decompose, vary).
+    args = ["workflow", "validate", "--workflow", params.workflow_path]
     _routing(args, params.host, params.port)
     return await _cli(args)
 
@@ -700,6 +704,153 @@ async def comfy_job_wait(params: JobWaitInput) -> str:
     return await _cli(args, timeout=LONG_TIMEOUT)
 
 
+class JobCancelInput(Base):
+    prompt_id: str = Field(..., description="Prompt_id do job a cancelar.", min_length=1)
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI.", ge=1, le=65535)
+
+
+@_tool(
+    name="comfy_job_cancel",
+    title="Cancelar um job",
+    read_only=False,
+    destructive=True,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_job_cancel(params: JobCancelInput) -> str:
+    """Cancela um job em execução ou na fila.
+
+    O trabalho já feito por ele se perde: uma geração interrompida no meio
+    não deixa saída. Use quando o job travou, quando os parâmetros estavam
+    errados, ou para liberar a fila antes de submeter o que interessa.
+
+    Cancelar duas vezes o mesmo job conhecido não é erro. Um prompt_id que o
+    servidor não conhece devolve `prompt_not_found`.
+
+    Args:
+        params (JobCancelInput):
+            - prompt_id (str): id do job
+            - host, port (Optional): endereço do servidor
+
+    Returns:
+        str: envelope JSON com o resultado do cancelamento.
+    """
+    args = ["jobs", "cancel", params.prompt_id]
+    _routing(args, params.host, params.port)
+    return await _cli(args, timeout=120)
+
+
+class JobListInput(Base):
+    limit: Optional[int] = Field(default=20, description="Teto de linhas.", ge=1, le=200)
+    all_targets: bool = Field(
+        default=False,
+        description="True inclui também os jobs de outros destinos de roteamento, "
+        "como a nuvem. Numa instalação só local não muda nada — para ver mais "
+        "histórico, aumente o limit.",
+    )
+    local_only: bool = Field(
+        default=False,
+        description="True lista apenas as submissões que o comfy-cli rastreou em "
+        "disco, sem consultar a fila do ComfyUI. O rastro é do workspace, não "
+        "desta sessão: jobs de sessões anteriores continuam aparecendo.",
+    )
+    orphaned: bool = Field(
+        default=False,
+        description="True lista só os jobs rastreados que sumiram do servidor, "
+        "tipicamente porque o ComfyUI foi reiniciado no meio.",
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI.", ge=1, le=65535)
+
+
+@_tool(
+    name="comfy_job_list",
+    title="Listar jobs e a fila",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_job_list(params: JobListInput) -> str:
+    """Mostra o que está na fila e o que já rodou.
+
+    Responde "o que o ComfyUI está fazendo agora": junta as submissões que
+    passaram por aqui com a fila e o histórico do próprio servidor. É por
+    onde se acha o prompt_id de um job que você perdeu de vista.
+
+    Args:
+        params (JobListInput):
+            - limit (Optional[int]): teto de linhas, padrão 20
+            - all_targets (bool): incluir também outros destinos de roteamento
+            - local_only (bool): só o que este servidor rastreou
+            - orphaned (bool): só os que sumiram do servidor
+            - host, port (Optional): endereço do servidor
+
+    Returns:
+        str: envelope JSON com os jobs e seus estados.
+    """
+    args = ["jobs", "ls"]
+    _opt(args, "--limit", params.limit)
+    if params.all_targets:
+        args.append("--all")
+    if params.local_only:
+        args.append("--local-only")
+    if params.orphaned:
+        args.append("--orphaned")
+    _routing(args, params.host, params.port)
+    return await _cli(args, timeout=120)
+
+
+class JobWatchInput(Base):
+    prompt_id: str = Field(..., description="Prompt_id a acompanhar.", min_length=1)
+    timeout_seconds: Optional[int] = Field(
+        default=None,
+        description="Espera máxima por evento recebido, em segundos inteiros. Padrão "
+        "da CLI: 30. NÃO é prazo total do job: um job longo que emite eventos segue "
+        "sendo acompanhado.",
+        ge=1,
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI.", ge=1, le=65535)
+
+
+@_tool(
+    name="comfy_job_watch",
+    title="Acompanhar a execução de um job",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_job_watch(params: JobWatchInput) -> str:
+    """Segue os eventos de execução de um job e devolve o rastro completo.
+
+    Não confunda com comfy_job_wait. O wait responde "terminou?"; este aqui
+    devolve o caminho percorrido — qual node executou, em que ordem, onde
+    parou. É ferramenta de diagnóstico, para quando o job falhou ou demorou
+    muito mais do que devia, e custa mais que o wait.
+
+    Você não vê nada acontecendo enquanto roda: a saída chega inteira no
+    fim, como todas as ferramentas. Para só aguardar, use comfy_job_wait.
+
+    Args:
+        params (JobWatchInput):
+            - prompt_id (str): id do job
+            - timeout_seconds (Optional[int]): espera máxima por evento
+            - host, port (Optional): endereço do servidor
+
+    Returns:
+        str: envelope JSON com os eventos de execução até o estado final.
+    """
+    # --poll-interval e --max-wait existem no comando, mas o help da CLI os
+    # declara cloud-only. Num plugin local seriam parâmetros inertes.
+    args = ["jobs", "watch", params.prompt_id]
+    _opt(args, "--timeout", params.timeout_seconds)
+    _routing(args, params.host, params.port)
+    return await _cli(args, timeout=LONG_TIMEOUT)
+
+
 class FetchOutputsInput(Base):
     prompt_id: str = Field(..., description="Prompt_id de um job já concluído.", min_length=1)
     out_dir: Optional[str] = Field(
@@ -745,6 +896,144 @@ async def comfy_fetch_outputs(params: FetchOutputsInput) -> str:
     if params.url_only:
         args.append("--url-only")
     return await _cli(args, timeout=LONG_TIMEOUT)
+
+
+# ---------------------------------------------------------------------
+# Diagnóstico
+#
+# Nenhum comando desta seção aceita --host: todos resolvem o servidor pelo
+# workspace ativo, e nenhum passa por _routing. O --port de `logs` é a única
+# exceção, e não é roteamento: escolhe de qual instância ler o log.
+# ---------------------------------------------------------------------
+
+
+@_tool(
+    name="comfy_system_stats",
+    title="VRAM e memória do ComfyUI",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_system_stats(params: EmptyInput) -> str:
+    """Lê a VRAM de cada dispositivo e a memória do sistema.
+
+    Chame antes de submeter algo pesado e depois de uma falha suspeita de
+    falta de memória. Um job que morre sem mensagem clara costuma ser VRAM
+    esgotada, e é aqui que isso aparece — em vez de ficar adivinhando pelo
+    sintoma.
+
+    Args:
+        params (EmptyInput): sem parâmetros.
+
+    Returns:
+        str: envelope JSON com a memória por dispositivo e a do sistema.
+    """
+    return await _cli(["system-stats"], timeout=120)
+
+
+class FreeMemoryInput(Base):
+    free_cache: bool = Field(
+        default=False,
+        description="Também limpar o cache do executor. Use quando descarregar os "
+        "modelos não bastou.",
+    )
+
+
+@_tool(
+    name="comfy_free_memory",
+    title="Liberar a VRAM do ComfyUI",
+    read_only=False,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_free_memory(params: FreeMemoryInput) -> str:
+    """Pede ao ComfyUI que descarregue os modelos da memória.
+
+    Vale para o servidor inteiro, não para um workflow: sai da VRAM o que
+    estiver carregado, sem distinguir quem carregou. O ComfyUI já gerencia
+    isso sozinho a cada execução, então esta ferramenta é para quando o
+    automático não bastou — tipicamente ao trocar de família de modelo ou
+    antes de um job grande depois de várias gerações.
+
+    Nada é apagado do disco: o próximo job recarrega o que precisar, ao
+    custo de alguns segundos. Tente isto antes de reiniciar o servidor com
+    comfy_stop_server, que leva a fila junto.
+
+    A liberação é uma marcação na fila de execução, não um efeito imediato.
+    Com um job em andamento ela só se aplica depois que ele termina, então
+    medir a VRAM no instante seguinte pode não mostrar diferença nenhuma.
+    (Fonte: ComfyUI, `server.py` rota POST /free, que só chama
+    `prompt_queue.set_flag`, e `main.py` no laço de `prompt_worker`, que lê
+    `q.get_flags()` e aí sim chama `unload_all_models()`.)
+
+    Args:
+        params (FreeMemoryInput):
+            - free_cache (bool): limpar também o cache do executor
+
+    Returns:
+        str: envelope JSON com o resultado. Para ver o efeito, chame
+            comfy_system_stats depois que a fila estiver vazia.
+    """
+    # O descarregamento dos modelos é o padrão da CLI e a única razão de
+    # chamar isto, então não é exposto como opção.
+    args = ["free"]
+    if params.free_cache:
+        args.append("--free-memory")
+    return await _cli(args, timeout=120)
+
+
+class ServerLogsInput(Base):
+    tail: Optional[int] = Field(
+        default=None,
+        description="Quantas linhas finais trazer. Padrão da CLI: 200.",
+        ge=1,
+        le=5000,
+    )
+    port: Optional[int] = Field(
+        default=None,
+        description="Porta do ComfyUI cujo log você quer. Serve para escolher entre "
+        "instâncias, não para endereçar o servidor. Sem valor, usa a porta "
+        "configurada em COMFY_LOCAL_URL.",
+        ge=1,
+        le=65535,
+    )
+
+
+@_tool(
+    name="comfy_server_logs",
+    title="Ler o log do ComfyUI",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_server_logs(params: ServerLogsInput) -> str:
+    """Traz as últimas linhas do log do ComfyUI subido em segundo plano.
+
+    É onde mora a causa real de um job que falhou. O envelope de erro da
+    execução diz que quebrou; o log diz por quê — modelo que não carregou,
+    custom node que estourou no import, VRAM que acabou no meio.
+
+    Só existe log para servidor iniciado por comfy_launch_server. Um
+    ComfyUI que você subiu na mão, fora da CLI, escreve no terminal dele.
+
+    Args:
+        params (ServerLogsInput):
+            - tail (Optional[int]): linhas finais, padrão 200
+            - port (Optional[int]): escolher entre instâncias
+
+    Returns:
+        str: envelope JSON com as linhas do log.
+    """
+    # A porta cai para COMFY_LOCAL_URL quando não vem explícita: sem isso,
+    # um ComfyUI configurado fora da 8188 teria o log lido da instância
+    # errada justamente quando se está diagnosticando uma falha.
+    args = ["logs"]
+    _opt(args, "--tail", params.tail)
+    _opt(args, "--port", params.port if params.port is not None else DEFAULT_PORT)
+    return await _cli(args, timeout=120)
 
 
 # ---------------------------------------------------------------------
@@ -875,6 +1164,41 @@ async def comfy_search_models(params: SearchModelsInput) -> str:
     return await _cli(args, timeout=120)
 
 
+class ShowModelInput(Base):
+    name: str = Field(
+        ...,
+        description="Nome exato do arquivo, como comfy_search_models devolveu. "
+        "Ex: 'sd_xl_base_1.0.safetensors'.",
+        min_length=1,
+    )
+
+
+@_tool(
+    name="comfy_show_model",
+    title="Detalhes de um modelo",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_show_model(params: ShowModelInput) -> str:
+    """Mostra os metadados de um modelo pelo nome exato do arquivo.
+
+    Use depois de comfy_search_models, quando precisar confirmar qual é o
+    arquivo certo entre nomes parecidos, ou saber a que família ele pertence
+    antes de escolher o sampler e a resolução.
+
+    Args:
+        params (ShowModelInput):
+            - name (str): nome exato do arquivo
+
+    Returns:
+        str: envelope JSON com os metadados do modelo.
+    """
+    # `models` não aceita --host nem --port: lê o workspace ativo em disco.
+    return await _cli(["models", "show", params.name], timeout=120)
+
+
 # ---------------------------------------------------------------------
 # Templates e edição por slot
 # ---------------------------------------------------------------------
@@ -918,8 +1242,67 @@ async def comfy_list_templates(params: ListTemplatesInput) -> str:
     return await _cli(args, timeout=180)
 
 
-class FetchTemplateInput(Base):
-    name: str = Field(..., description="Nome do template, igual ao listado por comfy_list_templates.", min_length=1)
+class TemplateNameInput(Base):
+    name: str = Field(
+        ...,
+        description="Nome do template, igual ao listado por comfy_list_templates.",
+        min_length=1,
+    )
+
+
+@_tool(
+    name="comfy_check_template",
+    title="Conferir se um template roda aqui",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=True,
+)
+async def comfy_check_template(params: TemplateNameInput) -> str:
+    """Diz se um template da galeria roda nesta instalação.
+
+    Confronta o que o template exige com o que existe na máquina: classes de
+    node e arquivos de modelo. Chame antes de comfy_fetch_template — um
+    template da galeria pode depender de custom node ou checkpoint que você
+    não tem, e sem esta checagem isso só aparece no erro da execução, depois
+    de você já ter montado o resto em cima dele.
+
+    Args:
+        params (TemplateNameInput):
+            - name (str): nome do template
+
+    Returns:
+        str: envelope JSON dizendo se roda e, quando não roda, o que falta.
+    """
+    return await _cli(["templates", "check", params.name], timeout=180)
+
+
+@_tool(
+    name="comfy_show_template",
+    title="Detalhes de um template",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=True,
+)
+async def comfy_show_template(params: TemplateNameInput) -> str:
+    """Mostra a ficha completa de um template sem baixar o JSON.
+
+    Serve para escolher entre candidatos que comfy_list_templates devolveu:
+    que modelo ele usa, que tipo de saída produz, que tamanho tem. Baixar
+    para depois descobrir que era outro custa uma gravação em disco à toa.
+
+    Args:
+        params (TemplateNameInput):
+            - name (str): nome do template
+
+    Returns:
+        str: envelope JSON com os detalhes do template.
+    """
+    return await _cli(["templates", "show", params.name], timeout=180)
+
+
+class FetchTemplateInput(TemplateNameInput):
     out_path: str = Field(
         ...,
         description="Onde gravar o JSON. Ex: C:\\comfy\\projeto\\meu.json",
@@ -984,6 +1367,38 @@ async def comfy_workflow_slots(params: SlotsInput) -> str:
     args = ["workflow", "slots", params.workflow_path]
     _routing(args, params.host, params.port)
     return await _cli(args, timeout=120)
+
+
+class NotesInput(Base):
+    workflow_path: str = Field(..., description="Caminho do workflow.", min_length=1)
+
+
+@_tool(
+    name="comfy_workflow_notes",
+    title="Ler as notas de um workflow",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_workflow_notes(params: NotesInput) -> str:
+    """Lê os nodes Note e MarkdownNote que o autor deixou no workflow.
+
+    É onde mora a instrução que não está em lugar nenhum do grafo: palavra
+    de disparo de LoRA, faixa de CFG que funciona, link do modelo certo,
+    resolução esperada. Um workflow tecnicamente válido gera imagem ruim
+    quando essas instruções são ignoradas, e isso não dá erro nenhum.
+
+    Leia antes de editar slot de template que você não escreveu.
+
+    Args:
+        params (NotesInput):
+            - workflow_path (str): caminho do workflow
+
+    Returns:
+        str: envelope JSON com as notas encontradas.
+    """
+    return await _cli(["workflow", "notes", params.workflow_path], timeout=120)
 
 
 class SetSlotsInput(Base):
@@ -1451,6 +1866,142 @@ async def comfy_list_fragments(params: FragmentsInput) -> str:
     args = ["workflow", "fragment", "ls"]
     _opt(args, "--lib", params.lib_dir)
     return await _cli(args, timeout=120)
+
+
+# ---------------------------------------------------------------------
+# Dependências da instalação
+#
+# As três ferramentas desta seção mudam o que existe na máquina. Confirme
+# com o usuário antes: baixar modelo consome banda e disco, e instalar
+# custom node altera o ambiente do ComfyUI.
+# ---------------------------------------------------------------------
+
+
+class DownloadModelInput(Base):
+    url: str = Field(
+        ...,
+        description="URL direta do arquivo. Modelo em host que exige login precisa "
+        "de token configurado antes, fora daqui.",
+        min_length=1,
+    )
+    relative_path: Optional[str] = Field(
+        default=None,
+        description="Pasta de destino relativa ao workspace, ex 'models/checkpoints'. "
+        "Os nomes válidos saem de comfy_search_models com folders_only=true.",
+    )
+    filename: Optional[str] = Field(
+        default=None, description="Nome do arquivo a gravar. Padrão: o nome que vier da URL."
+    )
+    background: bool = Field(
+        default=True,
+        description="True baixa em segundo plano e devolve um id na hora, para "
+        "acompanhar com comfy_download_status. Deixe True: um checkpoint leva mais "
+        "tempo que o teto desta ferramenta e a chamada morreria no meio.",
+    )
+
+
+@_tool(
+    name="comfy_download_model",
+    title="Baixar um modelo",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    open_world=True,
+)
+async def comfy_download_model(params: DownloadModelInput) -> str:
+    """Baixa um arquivo de modelo para a instalação local.
+
+    Grava vários gigabytes em disco e consome banda. Um arquivo de mesmo
+    nome no destino é substituído. Confirme com o usuário antes de chamar.
+
+    Com background=True, o padrão, devolve um id de download e volta na
+    hora; acompanhe com comfy_download_status. Só use background=False para
+    arquivo pequeno, porque a chamada bloqueia até terminar.
+
+    Args:
+        params (DownloadModelInput):
+            - url (str): URL direta do arquivo
+            - relative_path (Optional[str]): pasta de destino no workspace
+            - filename (Optional[str]): nome a gravar
+            - background (bool): baixar em segundo plano, padrão True
+
+    Returns:
+        str: envelope JSON com o id do download, ou o resultado final quando
+            background=False.
+    """
+    args = ["model", "download", "--url", params.url]
+    _opt(args, "--relative-path", params.relative_path)
+    _opt(args, "--filename", params.filename)
+    if params.background:
+        args.append("--background")
+    return await _cli(args, timeout=120 if params.background else LONG_TIMEOUT)
+
+
+class DownloadStatusInput(Base):
+    download_id: str = Field(
+        ..., description="Id devolvido por comfy_download_model.", min_length=1
+    )
+
+
+@_tool(
+    name="comfy_download_status",
+    title="Progresso de um download",
+    read_only=True,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_download_status(params: DownloadStatusInput) -> str:
+    """Consulta o progresso de um download de modelo.
+
+    É o par de comfy_download_model com background=True. Sem isto o
+    download em segundo plano não teria como ser acompanhado.
+
+    Args:
+        params (DownloadStatusInput):
+            - download_id (str): id do download
+
+    Returns:
+        str: envelope JSON com o progresso ou o estado final.
+    """
+    return await _cli(["model", "download-status", params.download_id], timeout=120)
+
+
+class InstallNodeInput(Base):
+    name: str = Field(
+        ...,
+        description="Nome do pacote de custom node, como aparece no registro do "
+        "ComfyUI-Manager.",
+        min_length=1,
+    )
+
+
+@_tool(
+    name="comfy_install_node",
+    title="Instalar um pacote de custom node",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    open_world=True,
+)
+async def comfy_install_node(params: InstallNodeInput) -> str:
+    """Instala um pacote de custom node no ComfyUI local.
+
+    Altera o ambiente: baixa código de terceiro e instala as dependências
+    Python dele no mesmo interpretador do ComfyUI, o que pode conflitar com
+    o que já estava lá. Confirme com o usuário antes de chamar.
+
+    O ComfyUI precisa ser reiniciado depois para enxergar as classes novas —
+    comfy_stop_server seguido de comfy_launch_server.
+
+    Args:
+        params (InstallNodeInput):
+            - name (str): nome do pacote
+
+    Returns:
+        str: envelope JSON com o resultado da instalação.
+    """
+    return await _cli(["node", "install", params.name], timeout=LONG_TIMEOUT)
 
 
 # ---------------------------------------------------------------------

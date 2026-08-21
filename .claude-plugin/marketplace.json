@@ -36,14 +36,14 @@
     {
       "name": "comfy-local",
       "source": "./plugins/comfy-local",
-      "description": "Dirige um ComfyUI local por MCP: introspecção da instalação viva, construção de workflows por fragmentos, execução e coleta de saídas. Instala desabilitado; exige comfy-cli.",
-      "version": "0.1.0"
+      "description": "Dirige um ComfyUI local por MCP: introspecção da instalação viva, construção de workflows por fragmentos, execução, diagnóstico de job e VRAM, e coleta de saídas. Instala desabilitado; exige comfy-cli.",
+      "version": "0.2.0"
     },
     {
       "name": "auditoria",
       "source": "./plugins/auditoria",
       "description": "Auditor adversarial: confronta afirmações de quem construiu e questiona as escolhas. Régua de aceite por severidade e limite de três rodadas. Roda em background e entrega o veredito por notificação. Sem hooks; a confirmação antes de disparar vem de uma regra de permissão que o README manda somar ao settings.json.",
-      "version": "1.1.0"
+      "version": "1.2.0"
     }
   ]
 }

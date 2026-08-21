@@ -39,23 +39,29 @@ Depois decida se quer confirmação antes de cada auditoria. A regra vai no seu
 }
 ```
 
-Cada rodada custa de 1,6 a 3,0 milhões de tokens faturáveis e de 2 a 7 minutos, e sem a regra o
+Cada rodada custa de 1,9 a 6,1 milhões de tokens faturáveis e de 6 a 10 minutos, e sem a regra o
 Claude pode despachar o auditor por conta própria — foi o que aconteceu em 19/08/2026, seis
 vezes seguidas.
 
 O grosso desse volume é cache read, cobrado a 0,1× do input, então o custo em dinheiro fica
-bem abaixo do que o número de tokens sugere. Medido em três auditorias completas do próprio
-plugin, uma por modelo (`model: inherit` — o auditor roda no modelo da sessão):
+bem abaixo do que o número de tokens sugere. Estas são as duas execuções do `auditoria:auditor`
+registradas até agora, ambas em Opus 5 — o agente usa `model: inherit`, e as duas sessões
+estavam em Opus:
 
-| Modelo | Tempo | Turnos | Chamadas Bash | Tokens faturáveis | ≈ USD via API |
-|---|---|---|---|---|---|
-| Opus 5 | 5m42 | 43 | 15 | 1,93 M | 2,61 |
-| Sonnet 5 | 6m37 | 52 | 21 | 3,05 M | 1,61 |
-| Haiku 4.5 | 2m25 | 40 | 12 | 1,62 M | 0,44 |
+| Data | Tempo | Turnos | Tokens faturáveis | Envelope recebido |
+|---|---|---|---|---|
+| 19/08 | 5m42 | 43 | 1,93 M | 4,8 mil caracteres |
+| 21/08 | 10m04 | 80 | 6,13 M | 7,0 mil |
 
-Repare que o Sonnet gastou **mais** tokens que o Opus, em mais turnos: trocar para um modelo
-mais barato encurta a conta, não o trabalho. O Haiku fecha em 2 minutos porque audita mais
-raso.
+A amostra é pequena demais para prever: a segunda gastou três vezes mais que a primeira com um
+envelope de tamanho parecido, porque o que manda na conta é o tamanho do trabalho a auditar, e
+não o do prompt. Não há medição em Sonnet nem em Haiku. Trate os números como ordem de grandeza.
+
+Sobre a regra de permissão, o dado que mais pesa veio de uma versão anterior deste agente: um
+despacho de teste com uma frase de 39 caracteres — "Teste de invocação do agente" — custou
+1,55 M de tokens. É o comportamento projetado, e continua valendo: sem afirmações no prompt, o
+`auditor.md` manda reconstruir o alvo pelo diff e auditar assim mesmo. **Um despacho acidental
+custa o que custa um pedido.**
 
 **O `*` não é enfeite.** O valor enviado vem qualificado pelo plugin — `auditoria:auditor`, não
 `auditor` — e a comparação é literal. Sem o curinga a regra não casa nada e fica inerte: você lê
@@ -80,6 +86,22 @@ dois caminhos passam pelo mesmo gate da tool `Agent`.
 Sem argumento, o agente reconstrói o alvo sozinho pelo diff e diz no relatório qual alvo
 escolheu. Com argumento, audita as afirmações que você entregou.
 
+## Onde isto entra no fluxo
+
+```
+trabalho pronto  ->  /auditar  ->  corrigir o veredito  ->  /code-review  ->  commit
+```
+
+A auditoria vem **antes** da revisão de código, e as duas não se sobrepõem. O auditor pergunta
+"o que foi afirmado é verdade, e é isso que foi pedido?" — afirmação falsa, requisito que ficou
+de fora, escopo que entrou sem pedido. A revisão de código pergunta "este código está certo?" —
+bug, duplicação, caminho de erro, limpeza. Nenhum dos dois faz a pergunta do outro.
+
+A ordem importa porque o alvo do auditor é o working tree: ele mede o que você construiu, não o
+que uma revisão automática consertou depois. Rodar a revisão primeiro faz o auditor conferir
+afirmações sobre um código que já mudou, e o que ele acha de errado volta para a revisão de
+qualquer forma.
+
 Também dá para despachar por `@auditor`, mas prefira a skill: ela entrega o contexto do que foi
 pedido, que o `@auditor` solto não tem. O conjunto de ferramentas que o agente recebe é decidido
 pelo harness em tempo de despacho, e o `agents/auditor.md` manda ele conferir o que tem antes de
@@ -90,6 +112,10 @@ concluir qualquer coisa — o plugin não promete `LSP` em nenhum dos dois camin
 O agente declara `background: true`, então o `/auditar` devolve o turno na hora e a auditoria
 corre em segundo plano. O veredito chega depois, por notificação, e a `SKILL.md` manda entregá-lo
 íntegro no turno em que chegar. Acompanhe e cancele por `/tasks`.
+
+Entregue o veredito, quem construiu passa a consertar sozinho, no mesmo turno — mas conferindo
+cada achado na fonte antes de aplicar, e reportando o que não se sustentou. Auditor também erra,
+e corrigir no escuro só troca um erro por outro.
 
 Sem esse campo quem decide foreground ou background é o Claude, tarefa a tarefa — e com a skill
 pedindo o veredito de volta, ele tende a segurar o turno. Para forçar o modo síncrono de novo,
@@ -102,8 +128,8 @@ despacho falha na hora com `In-process teammates cannot spawn background agents`
 acima não contorna, porque essa checagem vem antes dela. Só aparece em sessão com teammates; do
 `/auditar` na sessão principal, nunca.
 
-**Pré-aprove os comandos de verificação.** O auditor prova afirmação executando: foram de 12 a 21
-chamadas de `Bash` nas três auditorias medidas, entre teste, lint, type-check e `git`. Comando
+**Pré-aprove os comandos de verificação.** O auditor prova afirmação executando: teste, lint,
+type-check e `git` saem por `Bash` — foram 15 chamadas na auditoria de 19/08. Comando
 fora do `allow` vira prompt de permissão, e em background a auditoria fica parada esperando você
 responder — o prompt aparece na sessão principal, mas não interrompe o que você está fazendo, e
 passa fácil despercebido. Vale somar ao `allow` do projeto os comandos de verificação que a sua

@@ -61,8 +61,13 @@ Se te chamarem com pouco ou nada ("audita isso", "@auditor"), **reconstrua o alv
 abra o relatório dizendo qual alvo você escolheu.** A resposta a um pedido vago é uma auditoria
 com escopo declarado, não uma pergunta de volta.
 
-1. `git status --porcelain` e `git diff` (mais `git diff --staged`) mostram o que mudou. Se o
-   diff estiver vazio, `git log --oneline -5` e `git show` do último commit.
+1. `git status --porcelain` e `git diff` (mais `git diff --staged`) mostram o que mudou. **É
+   este o seu alvo:** você audita o que ainda não foi commitado, porque a auditoria existe para
+   acontecer antes do commit. Trabalho já commitado fica de fora, mesmo que seja da mesma
+   sessão, a não ser que peçam.
+   Só quando o working tree estiver limpo, e portanto não houver nada por commitar, vale cair
+   para `git log --oneline -5` e `git show` do último commit — dizendo no relatório que foi isso
+   que você auditou.
 2. Fora de repositório, ou com os dois diffs vazios, procure o que foi mexido há pouco com
    `find <dir> -newermt '-2 hours'`, ignorando `.git`, `node_modules`, `dist` e caches.
 3. Derive as afirmações implícitas: código novo alega que funciona; teste novo alega que
@@ -186,9 +191,8 @@ vale mais aplicado a uma dessas duas:
 - **comparar pedido com entrega** — o que estava no plano e não está no diff, o que está no
   diff e ninguém pediu.
 
-Nenhum outro mecanismo faz essa pergunta. A revisão de código — bug, duplicação, camada,
-caminho de erro, limpeza — tem dono e roda separada: é o `/code-review` embutido, com vários
-agentes em paralelo e um passo de verificação contra o comportamento real. Quando algo assim
+Essa pergunta é sua e de mais ninguém, e ela não cabe numa passada de revisão de código. Bug,
+duplicação, camada, caminho de erro, limpeza — nada disso é o seu assunto. Quando algo assim
 saltar aos olhos enquanto você prova outra coisa, uma linha em CORRIGIR entrega o achado e
 devolve você ao seu trabalho.
 
