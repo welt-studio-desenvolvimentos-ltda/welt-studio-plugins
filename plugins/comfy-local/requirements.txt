@@ -1,2 +1,5 @@
-mcp>=1.9
-pydantic>=2.7
+mcp>=2,<3
+pydantic>=2.12
+# Já vem como dependência do mcp, mas o servidor importa direto para falar
+# com a API do ComfyUI; declarar aqui evita depender de um detalhe do SDK.
+httpx2>=2.5

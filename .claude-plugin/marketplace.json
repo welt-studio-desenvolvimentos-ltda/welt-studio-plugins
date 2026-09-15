@@ -36,8 +36,8 @@
     {
       "name": "comfy-local",
       "source": "./plugins/comfy-local",
-      "description": "Dirige um ComfyUI local por MCP: introspecção da instalação viva, construção de workflows por fragmentos, execução, diagnóstico de job e VRAM, e coleta de saídas. Instala desabilitado; exige comfy-cli.",
-      "version": "0.2.0"
+      "description": "Dirige um ComfyUI local: edita o grafo node a node — adiciona, liga e remove — e espelha cada edição no canvas aberto pela extensão que vem junto. Mais introspecção da instalação viva, execução, diagnóstico de job e VRAM, biblioteca de workflows e coleta de saídas. Instala desabilitado; exige comfy-cli 1.20+.",
+      "version": "0.3.0"
     },
     {
       "name": "auditoria",

@@ -49,8 +49,11 @@ def log(msg: str) -> None:
 
 def data_dir() -> Path:
     """Diretório persistente do plugin, com alternativa local se ausente."""
-    env = os.environ.get("CLAUDE_PLUGIN_DATA")
-    if env:
+    env = (os.environ.get("CLAUDE_PLUGIN_DATA") or "").strip()
+    # Um "${...}" que chegou até aqui é placeholder que ninguém substituiu, e
+    # usá-lo criaria um diretório com esse nome literal no diretório de
+    # trabalho — um venv fora do lugar, invisível para a próxima sessão.
+    if env and "${" not in env:
         d = Path(env)
     else:
         # Fora do Claude Code, por exemplo em teste manual.
@@ -85,7 +88,11 @@ def acquire_lock(lock: Path, venv: Path, stamp: Path) -> bool:
     pode deixar uma instalação pela metade que o carimbo depois declara boa.
 
     Devolve True se esta sessão deve provisionar, e False se outra já
-    terminou o serviço enquanto esperávamos.
+    terminou o serviço enquanto esperávamos. Quando devolve True, a trava no
+    disco é sempre desta sessão — inclusive ao assumir uma abandonada, que
+    apagamos e tomamos de novo no lugar. É o que garante que ela seja solta
+    no fim: deixar uma trava morta no disco faria toda provisão futura
+    esperar o tempo inteiro à toa.
     """
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     avisou = False
@@ -97,10 +104,17 @@ def acquire_lock(lock: Path, venv: Path, stamp: Path) -> bool:
                 return False  # a outra sessão terminou; nada a fazer
 
             if time.monotonic() >= deadline:
-                # Trava abandonada por uma sessão que morreu no meio. Assume
-                # o serviço em vez de deixar o plugin travado para sempre.
+                # Trava abandonada por uma sessão que morreu no meio. Apaga a
+                # morta e volta ao topo para tomar uma nossa: assim ela é
+                # solta no fim, em vez de ficar no disco fazendo a próxima
+                # atualização de dependências esperar o tempo inteiro de novo.
+                # Se outra sessão ganhar a corrida pela trava nova, voltamos a
+                # esperar — com o prazo reiniciado, porque a trava agora é de
+                # alguém que acabamos de ver vivo.
                 log("trava de provisionamento velha demais, assumindo")
-                return True
+                release_lock(lock)
+                deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+                continue
 
             if not avisou:
                 log("outra sessão está preparando o ambiente, aguardando")

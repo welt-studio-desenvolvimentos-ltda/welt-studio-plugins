@@ -39,26 +39,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
-from typing import Any, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Any, List, Literal, Optional, Tuple
+from urllib.parse import quote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# O SDK do MCP renomeou FastMCP para MCPServer na versão 2.0 e trocou o
-# dicionário de anotações por um modelo tipado. Este bloco aceita as duas.
-try:  # SDK 2.x
-    from mcp.server import MCPServer as _ServerClass
-    from mcp.types import ToolAnnotations as _ToolAnnotations
-
-    _SDK_V2 = True
-except ImportError:  # SDK 1.x
-    from mcp.server.fastmcp import FastMCP as _ServerClass
-    from mcp.types import ToolAnnotations as _ToolAnnotations
-
-    _SDK_V2 = False
+from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------
 # Constantes
@@ -68,6 +59,26 @@ COMFY_BIN: str = os.environ.get("COMFY_BIN") or shutil.which("comfy") or "comfy"
 DEFAULT_TIMEOUT: int = int(os.environ.get("COMFY_MCP_TIMEOUT", "300"))
 LONG_TIMEOUT: int = int(os.environ.get("COMFY_MCP_LONG_TIMEOUT", "1800"))
 MAX_CHARS: int = int(os.environ.get("COMFY_MCP_MAX_CHARS", "24000"))
+
+# Os verbos de edição de grafo (`workflow add-node`, `connect`, `set-widget`,
+# …) entraram no comfy-cli 1.19.0. Pedimos 1.20.0 porque é a primeira versão
+# em que a superfície inteira que embrulhamos aqui está estável — incluindo
+# compose/decompose/fragment, que antes falhavam de forma obscura numa CLI
+# velha, sem que nada dissesse que o problema era a versão.
+MIN_COMFY_CLI: str = "1.20.0"
+
+# Publicar cada edição no canvas aberto exige a extensão comfyui-welt-live
+# instalada no ComfyUI. Sem ela a publicação falha silenciosamente e a
+# edição segue valendo — por isso o padrão é ligado: quem não instalou não
+# perde nada, e quem instalou não precisa configurar.
+LIVE_ENABLED: bool = os.environ.get("COMFY_MCP_LIVE", "1").lower() not in ("0", "false", "no")
+
+# O httpx registra uma linha por requisição em nível INFO. Aqui isso só
+# enche o stderr, que é onde o diagnóstico do plugin aparece para quem roda
+# `claude --debug` — e um log de rede por chamada esconde a mensagem que a
+# pessoa está procurando.
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -110,7 +121,61 @@ def _parse_address(raw: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
 
 DEFAULT_HOST, DEFAULT_PORT = _parse_address(os.environ.get("COMFY_LOCAL_URL"))
 
-mcp = _ServerClass("comfy_mcp")
+
+def _version_tuple(raw: str) -> Optional[Tuple[int, ...]]:
+    """Converte "1.20.0" em (1, 20, 0). Devolve None se não der para ler.
+
+    Só os dígitos à frente de cada parte contam, para que "1.20.0rc1" ou
+    "1.20.0.dev3" comparem como 1.20.0 em vez de virarem versão ilegível.
+    """
+    partes: List[int] = []
+    for pedaco in (raw or "").strip().lstrip("v").split("."):
+        digitos = ""
+        for ch in pedaco:
+            if not ch.isdigit():
+                break
+            digitos += ch
+        if not digitos:
+            break
+        partes.append(int(digitos))
+    return tuple(partes) if partes else None
+
+
+def _cli_floor(envelope: dict) -> dict:
+    """Confere a versão do comfy-cli contra o piso que este plugin exige.
+
+    A versão vem de graça: todo envelope do comfy-cli carrega o campo
+    "version". Degrada em vez de falhar — um envelope sem versão legível
+    vira `known: false`, porque não saber a versão não é o mesmo que saber
+    que ela é velha, e bloquear por isso quebraria quem está bem.
+    """
+    bruto = envelope.get("version") if isinstance(envelope, dict) else None
+    atual = _version_tuple(bruto) if isinstance(bruto, str) else None
+    minimo = _version_tuple(MIN_COMFY_CLI)
+    if atual is None or minimo is None:
+        return {
+            "known": False,
+            "minimum": MIN_COMFY_CLI,
+            "reported": bruto,
+            "hint": f"Não foi possível ler a versão do comfy-cli. Este plugin espera {MIN_COMFY_CLI} ou maior.",
+        }
+    # Iguala o comprimento antes de comparar: sem isso, "1.20" viraria
+    # (1, 20), que é menor que (1, 20, 0) na comparação de tuplas do Python,
+    # e uma CLI que atende o piso seria acusada de velha.
+    largura = max(len(atual), len(minimo))
+    ok = atual + (0,) * (largura - len(atual)) >= minimo + (0,) * (largura - len(minimo))
+    bloco = {"known": True, "version": bruto, "minimum": MIN_COMFY_CLI, "satisfied": ok}
+    if not ok:
+        bloco["hint"] = (
+            f"comfy-cli {bruto} é anterior a {MIN_COMFY_CLI}. As ferramentas de edição "
+            "de grafo, de fragmento e de receita vão falhar com erro de uso da CLI. "
+            "Atualize com `pip install --upgrade comfy-cli` no mesmo ambiente "
+            "apontado por COMFY_BIN."
+        )
+    return bloco
+
+
+mcp = MCPServer("comfy_mcp")
 
 
 def _tool(
@@ -121,17 +186,15 @@ def _tool(
     idempotent: bool = True,
     open_world: bool = False,
 ):
-    """Registra uma ferramenta com anotações, nos dois formatos de SDK."""
-    annotations = _ToolAnnotations(
+    """Registra uma ferramenta com as anotações de comportamento dela."""
+    annotations = ToolAnnotations(
         title=title,
         readOnlyHint=read_only,
         destructiveHint=destructive,
         idempotentHint=idempotent,
         openWorldHint=open_world,
     )
-    if _SDK_V2:
-        return mcp.tool(name=name, title=title, annotations=annotations)
-    return mcp.tool(name=name, annotations=annotations)
+    return mcp.tool(name=name, title=title, annotations=annotations)
 
 
 # ---------------------------------------------------------------------
@@ -412,17 +475,25 @@ async def comfy_server_info(params: EmptyInput) -> str:
         params (EmptyInput): sem parâmetros.
 
     Returns:
-        str: JSON com duas chaves, "env" e "which", cada uma contendo o
-            envelope do comando correspondente. Se o servidor não estiver
-            rodando, os comandos seguintes retornarão o código de erro
-            `server_not_running`, resolvido por comfy_launch_server.
+        str: JSON com três chaves. "env" e "which" trazem o envelope do
+            comando correspondente. "cli" confere a versão do comfy-cli
+            contra o piso deste plugin: com `satisfied: false`, as
+            ferramentas de edição de grafo, fragmento e receita vão falhar
+            com erro de uso da CLI, e o campo hint diz como atualizar.
+            Se o servidor não estiver rodando, os comandos seguintes
+            retornarão o código `server_not_running`, resolvido por
+            comfy_launch_server.
     """
     env_obj, which_obj = await asyncio.gather(
         _cli_obj(["env"], timeout=60),
         _cli_obj(["which"], timeout=60),
     )
     return _truncate(
-        json.dumps({"env": env_obj, "which": which_obj}, indent=2, ensure_ascii=False)
+        json.dumps(
+            {"env": env_obj, "which": which_obj, "cli": _cli_floor(env_obj)},
+            indent=2,
+            ensure_ascii=False,
+        )
     )
 
 
@@ -1866,6 +1937,562 @@ async def comfy_list_fragments(params: FragmentsInput) -> str:
     args = ["workflow", "fragment", "ls"]
     _opt(args, "--lib", params.lib_dir)
     return await _cli(args, timeout=120)
+
+
+async def _publish_live(workflow_path: str, host: Optional[str], port: Optional[int]) -> dict:
+    """Manda o grafo recém-editado para o canvas aberto do ComfyUI.
+
+    Depende da extensão comfyui-welt-live estar instalada no ComfyUI: é o
+    único caminho para um evento chegar à aba aberta, já que o /ws do
+    ComfyUI não aceita comando de fora e nenhuma rota dele transmite evento
+    arbitrário.
+
+    Nunca levanta. O canvas não acompanhar é uma decepção, não uma falha da
+    edição — o arquivo já foi gravado. O resultado entra no envelope como
+    bloco `live` para o agente saber se a pessoa viu acontecer ou se
+    precisa abrir o workflow na mão.
+    """
+    if not LIVE_ENABLED:
+        return {"published": False, "reason": "desligado por COMFY_MCP_LIVE"}
+
+    try:
+        import httpx2
+
+        with open(workflow_path, "r", encoding="utf-8") as fh:
+            grafo = json.load(fh)
+        base = _http_base(host, port)
+        async with httpx2.AsyncClient(base_url=base, timeout=10.0) as cliente:
+            r = await cliente.post(
+                "/welt-live/publish",
+                json={"graph": grafo, "name": os.path.basename(workflow_path)},
+            )
+        if r.status_code == 404:
+            return {
+                "published": False,
+                "reason": "extensao_ausente",
+                "hint": "Instale comfyui-welt-live no custom_nodes/ do ComfyUI para o "
+                "canvas acompanhar as edições. Sem ela, publique com "
+                "comfy_workflow_library e abra pela barra lateral.",
+            }
+        if r.status_code >= 400:
+            return {"published": False, "reason": f"http_{r.status_code}"}
+        dados = r.json()
+        return {"published": True, "clients": dados.get("clients"), "version": dados.get("version")}
+    except Exception as exc:
+        return {"published": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+# ---------------------------------------------------------------------
+# Construção de grafo: edição estruturada
+#
+# O comfy-cli chama estes verbos de "structured, CRDT-ready edit
+# primitives": cada um devolve em data.op a operação que aplicou, de forma
+# replayável. São eles que permitem montar um grafo node a node em vez de
+# só trocar valor de slot num workflow que já existe.
+#
+# Ficam agrupados sob uma ferramenta com `action` de propósito. Oito
+# ferramentas avulsas custariam contexto em toda sessão sem dar nada em
+# troca, já que compartilham o mesmo arquivo de trabalho e o mesmo envelope.
+# ---------------------------------------------------------------------
+
+
+GraphAction = Literal[
+    "add_node",
+    "connect",
+    "set_widget",
+    "delete_nodes",
+    "clear",
+    "reset_doc",
+    "ls_nodes",
+    "print",
+]
+
+
+class EditGraphInput(Base):
+    action: GraphAction = Field(
+        ...,
+        description="Qual edição aplicar. add_node acrescenta um node; connect liga "
+        "uma saída a uma entrada; set_widget muda um valor; delete_nodes remove; "
+        "clear esvazia; reset_doc zera inclusive o histórico; ls_nodes e print "
+        "apenas leem.",
+    )
+    workflow_path: str = Field(
+        ...,
+        description="Workflow em formato de interface. É o arquivo editado no lugar, "
+        "salvo com stdout=True.",
+        min_length=1,
+    )
+    class_type: Optional[str] = Field(
+        default=None,
+        description="add_node: classe do node, ex 'KSampler'. O nome exato sai de "
+        "comfy_search_nodes.",
+    )
+    at: Optional[str] = Field(
+        default=None,
+        description="add_node: posição no canvas, no formato 'x,y'. Sem ela o node "
+        "entra na posição padrão.",
+    )
+    allow_deprecated: bool = Field(
+        default=False,
+        description="add_node: adicionar mesmo que o catálogo marque a classe como "
+        "obsoleta.",
+    )
+    source: Optional[str] = Field(
+        default=None,
+        description="connect: origem, '<id_do_node>.<slot_de_saída>'. O slot aceita "
+        "nome ou índice.",
+    )
+    target: Optional[str] = Field(
+        default=None,
+        description="connect: destino, '<id_do_node>.<slot_de_entrada>'.",
+    )
+    addr: Optional[str] = Field(
+        default=None,
+        description="set_widget: endereço do widget, '<id_do_node>.<nome_do_widget>'. "
+        "Os endereços válidos saem de comfy_workflow_slots.",
+    )
+    value: Optional[str] = Field(
+        default=None,
+        description="set_widget: valor novo. É lido como JSON e, se não for JSON "
+        "válido, vira string literal.",
+    )
+    nodes: Optional[List[str]] = Field(
+        default=None,
+        description="delete_nodes: ids a remover. Vários numa chamada saem numa "
+        "gravação atômica — ou todos entram, ou nenhum.",
+        max_length=64,
+    )
+    confirm: bool = Field(
+        default=False,
+        description="reset_doc: obrigatório. Sem ele o comando falha fechado e não "
+        "grava nada, que é a proteção contra zerar um grafo por engano.",
+    )
+    stdout: bool = Field(
+        default=False,
+        description="True devolve o workflow resultante sem tocar no arquivo. False, "
+        "o padrão, regrava o original — o comfy-cli grava de forma atômica.",
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI, para o catálogo de nodes.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI.", ge=1, le=65535)
+
+
+def _missing(action: str, campos: str, hint: str) -> str:
+    """Envelope de campo faltando, no mesmo formato dos erros da CLI."""
+    return json.dumps(
+        {
+            "ok": False,
+            "error": {
+                "code": "missing_input",
+                "message": f"action='{action}' exige {campos}.",
+                "hint": hint,
+            },
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@_tool(
+    name="comfy_edit_graph",
+    title="Editar o grafo de um workflow",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    open_world=False,
+)
+async def comfy_edit_graph(params: EditGraphInput) -> str:
+    """Monta e altera o grafo de um workflow node a node.
+
+    É a diferença entre ajustar um workflow pronto e construir um. As
+    ferramentas de slot mudam valores dentro de uma estrutura existente;
+    estas mudam a estrutura: acrescentam node, ligam saída em entrada,
+    removem o que sobrou.
+
+    Cada ação devolve em data.op a operação aplicada, com base_version e
+    version. Guarde-as se for reconstruir a sequência depois — é o mesmo
+    formato que comfy_graph_recipe consome.
+
+    O caminho normal é: comfy_search_nodes ou comfy_list_nodes para achar a
+    classe, comfy_show_node para ver os slots dela, add_node, connect,
+    set_widget, e comfy_validate_workflow antes de rodar.
+
+    Por padrão o arquivo original é regravado. Use stdout=True para receber
+    o resultado sem tocar em disco quando o grafo de partida for trabalhoso.
+
+    Args:
+        params (EditGraphInput):
+            - action (str): qual edição aplicar
+            - workflow_path (str): o workflow a editar
+            - demais campos: dependem da action, cada um descrito no schema
+
+    Returns:
+        str: envelope JSON com a operação aplicada. Em erro, error.hint diz
+            o que corrigir; classe inexistente traz details.close_matches.
+    """
+    a = params.action
+    args: List[str]
+
+    if a == "add_node":
+        if not params.class_type:
+            return _missing(a, "class_type", "passe a classe do node, ex 'KSampler'. Ache o nome exato com comfy_search_nodes.")
+        args = ["workflow", "add-node", params.workflow_path, params.class_type]
+        _opt(args, "--at", params.at)
+        if params.allow_deprecated:
+            args.append("--allow-deprecated")
+    elif a == "connect":
+        if not params.source or not params.target:
+            return _missing(a, "source e target", "use '<id_do_node>.<slot>' nos dois. comfy_show_node lista os slots de uma classe.")
+        args = ["workflow", "connect", params.workflow_path, params.source, params.target]
+    elif a == "set_widget":
+        if not params.addr or params.value is None:
+            return _missing(a, "addr e value", "addr é '<id_do_node>.<widget>'; os endereços válidos saem de comfy_workflow_slots.")
+        args = ["workflow", "set-widget", params.workflow_path, params.addr, params.value]
+    elif a == "delete_nodes":
+        if not params.nodes:
+            return _missing(a, "nodes", "passe os ids a remover. comfy_edit_graph com action='ls_nodes' lista os ids do arquivo.")
+        args = ["workflow", "delete-nodes", params.workflow_path, *params.nodes]
+    elif a == "clear":
+        args = ["workflow", "clear", params.workflow_path]
+    elif a == "reset_doc":
+        if not params.confirm:
+            return _missing(
+                a,
+                "confirm=True",
+                "reset_doc apaga nodes, ids e o histórico de replay. Confirme com o "
+                "usuário antes e só então passe confirm=True.",
+            )
+        args = ["workflow", "reset-doc", params.workflow_path, "--confirm"]
+    elif a == "ls_nodes":
+        # Não aceita --stdout nem roteamento: lê o arquivo e lista.
+        return await _cli(["workflow", "ls-nodes", params.workflow_path], timeout=120)
+    else:  # print
+        args = ["workflow", "print", params.workflow_path]
+        _routing(args, params.host, params.port)
+        return await _cli(args, timeout=120)
+
+    if params.stdout:
+        args.append("--stdout")
+    # clear e reset-doc resolvem tudo no arquivo; os demais consultam o
+    # catálogo de nodes da instalação viva para validar classe e slot.
+    if a not in ("clear", "reset_doc"):
+        _routing(args, params.host, params.port)
+
+    envelope = await _cli_obj(args, timeout=120)
+    # Só faz sentido espelhar o que foi de fato gravado: com stdout=True o
+    # arquivo não mudou, e numa edição que falhou não há nada novo para ver.
+    if envelope.get("ok") and not params.stdout:
+        envelope["live"] = await _publish_live(params.workflow_path, params.host, params.port)
+    return _truncate(json.dumps(envelope, indent=2, ensure_ascii=False))
+
+
+RecipeAction = Literal["apply", "capture", "foreach"]
+
+
+class GraphRecipeInput(Base):
+    action: RecipeAction = Field(
+        ...,
+        description="apply aplica um lote de ops num workflow; capture projeta um "
+        "workflow na receita que o reconstrói; foreach instancia uma receita sobre N "
+        "conjuntos de parâmetros.",
+    )
+    workflow_path: Optional[str] = Field(
+        default=None, description="apply e capture: o workflow de trabalho."
+    )
+    recipe_path: Optional[str] = Field(
+        default=None,
+        description="apply: arquivo de ops a aplicar. foreach: a receita "
+        "{params, ops} a instanciar.",
+    )
+    params_path: Optional[str] = Field(
+        default=None,
+        description="foreach: arquivo com os conjuntos de parâmetros — array JSON de "
+        "objetos, um objeto só, ou JSONL.",
+    )
+    out_dir: Optional[str] = Field(
+        default=None, description="foreach: pasta onde gravar os N workflows gerados."
+    )
+    out_path: Optional[str] = Field(
+        default=None, description="capture: onde gravar a receita. Sem ela, volta na resposta."
+    )
+    name: Optional[str] = Field(default=None, description="capture: nome da receita.")
+    overrides: Optional[List[str]] = Field(
+        default=None,
+        description="apply: pares 'chave=valor' dos params da receita. capture: pares "
+        "'<id_do_node>.<widget>=<nome_do_param>' para promover um widget a parâmetro.",
+        max_length=40,
+    )
+    stdout: bool = Field(
+        default=False, description="apply: devolver o resultado sem regravar o arquivo."
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI, para o catálogo de nodes.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI.", ge=1, le=65535)
+
+
+@_tool(
+    name="comfy_graph_recipe",
+    title="Receitas de grafo: aplicar, capturar, multiplicar",
+    read_only=False,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_graph_recipe(params: GraphRecipeInput) -> str:
+    """Trabalha com a sequência de edições que constrói um grafo, e não com o grafo.
+
+    Uma receita é o lote de operações que reconstrói um workflow do zero,
+    com alguns widgets promovidos a parâmetro. É o que separa "tenho este
+    JSON" de "sei montar este tipo de grafo".
+
+    - capture: parte de um workflow que funciona e devolve a receita dele.
+    - apply: aplica essa receita, com outros parâmetros, num workflow.
+    - foreach: instancia a receita sobre N conjuntos de parâmetros de uma
+      vez, gerando N workflows — é o caminho de lote quando a variação
+      muda a estrutura, e não só valores. Para variar só valores,
+      comfy_vary_workflow é mais direto.
+
+    Args:
+        params (GraphRecipeInput):
+            - action (str): apply, capture ou foreach
+            - demais campos: dependem da action, descritos no schema
+
+    Returns:
+        str: envelope JSON com a receita, o resultado da aplicação, ou os
+            caminhos dos workflows gerados.
+    """
+    a = params.action
+    if a == "apply":
+        if not params.workflow_path or not params.recipe_path:
+            return _missing(a, "workflow_path e recipe_path", "recipe_path é o arquivo de ops; gere um com action='capture'.")
+        args = ["workflow", "apply", params.workflow_path, "--ops", params.recipe_path]
+        for par in params.overrides or []:
+            args.extend(["--param", par])
+        if params.stdout:
+            args.append("--stdout")
+    elif a == "capture":
+        if not params.workflow_path:
+            return _missing(a, "workflow_path", "aponte o workflow que já funciona e que você quer transformar em receita.")
+        args = ["workflow", "capture", params.workflow_path]
+        _opt(args, "--name", params.name)
+        _opt(args, "--out", params.out_path)
+        for par in params.overrides or []:
+            args.extend(["--param", par])
+    else:  # foreach
+        if not params.recipe_path or not params.params_path or not params.out_dir:
+            return _missing(
+                a,
+                "recipe_path, params_path e out_dir",
+                "foreach grava um arquivo por conjunto de parâmetros, então precisa da pasta de destino.",
+            )
+        args = [
+            "workflow",
+            "foreach",
+            params.recipe_path,
+            "--params",
+            params.params_path,
+            "--out-dir",
+            params.out_dir,
+        ]
+
+    _routing(args, params.host, params.port)
+    return await _cli(args, timeout=300)
+
+
+# ---------------------------------------------------------------------
+# Biblioteca de workflows do ComfyUI
+#
+# Esta seção fala HTTP direto com o ComfyUI, não pelo comfy-cli. É de
+# propósito: a rota /userdata é o que alimenta a lista de workflows da
+# barra lateral da interface, então gravar ali faz o grafo aparecer no
+# ComfyUI no mesmo instante. Pelo CLI seria um subprocesso a mais para
+# chegar no mesmo lugar.
+#
+# O cliente HTTP vem de graça: httpx2 já é dependência do SDK do MCP.
+# ---------------------------------------------------------------------
+
+LibraryAction = Literal["list", "get", "save", "delete"]
+
+# Onde a interface do ComfyUI procura os workflows da barra lateral.
+LIBRARY_DIR = "workflows"
+
+
+class WorkflowLibraryInput(Base):
+    action: LibraryAction = Field(
+        ...,
+        description="list mostra o que está na biblioteca; get lê um workflow; save "
+        "grava (é o que faz aparecer no ComfyUI); delete remove.",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="Nome na biblioteca, ex 'retrato.json'. Subpasta é aceita: "
+        "'projeto/retrato.json'. Obrigatório em get, save e delete.",
+    )
+    workflow_path: Optional[str] = Field(
+        default=None,
+        description="save: arquivo local a enviar. É o workflow que você acabou de "
+        "montar com comfy_edit_graph.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="save: True substitui um workflow de mesmo nome já na biblioteca. "
+        "O padrão recusa, para não apagar trabalho do usuário sem ele pedir.",
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI, padrão 127.0.0.1.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI, padrão 8188.", ge=1, le=65535)
+
+
+def _http_base(host: Optional[str], port: Optional[int]) -> str:
+    """Endereço HTTP do ComfyUI: parâmetro da chamada vence COMFY_LOCAL_URL."""
+    h = host or DEFAULT_HOST or "127.0.0.1"
+    p = port or DEFAULT_PORT or 8188
+    return f"http://{h}:{p}"
+
+
+def _http_error(code: str, message: str, hint: str, **extra: Any) -> str:
+    """Erro HTTP no mesmo formato de envelope que a CLI devolve.
+
+    Quem chama trata os dois caminhos igual, e a regra de sempre ler o
+    campo hint continua valendo mesmo nas ferramentas que não passam pela
+    CLI.
+    """
+    erro = {"ok": False, "error": {"code": code, "message": message, "hint": hint}}
+    erro.update(extra)
+    return json.dumps(erro, indent=2, ensure_ascii=False)
+
+
+@_tool(
+    name="comfy_workflow_library",
+    title="Biblioteca de workflows do ComfyUI",
+    read_only=False,
+    destructive=True,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_workflow_library(params: WorkflowLibraryInput) -> str:
+    """Põe um workflow na biblioteca do ComfyUI, onde o usuário consegue abrir.
+
+    Esta é a ponte entre o que o agente monta e o que a pessoa vê. Um
+    workflow num arquivo solto no disco não existe para quem está olhando a
+    interface; gravado aqui, ele aparece na barra lateral de Workflows do
+    ComfyUI na hora, a um clique de ser aberto no canvas.
+
+    Feche o ciclo com ela: monte o grafo com comfy_edit_graph, confira com
+    comfy_validate_workflow, e então save — em vez de entregar um caminho
+    de arquivo e pedir para a pessoa importar na mão.
+
+    Fala HTTP direto com o ComfyUI, então não depende do comfy-cli, mas
+    exige o servidor no ar. Se ele estiver fora, suba com
+    comfy_launch_server.
+
+    delete apaga da biblioteca do usuário e não tem desfazer; save com
+    overwrite=True substitui. Confirme antes em workflow que você não criou.
+
+    Args:
+        params (WorkflowLibraryInput):
+            - action (str): list, get, save ou delete
+            - name (Optional[str]): nome na biblioteca
+            - workflow_path (Optional[str]): arquivo local, para save
+            - overwrite (bool): substituir no save, padrão False
+            - host, port (Optional): endereço do servidor
+
+    Returns:
+        str: envelope JSON. Em erro, error.hint diz o que corrigir.
+    """
+    import httpx2
+
+    base = _http_base(params.host, params.port)
+    a = params.action
+
+    if a != "list" and not params.name:
+        return _missing(a, "name", "passe o nome do workflow na biblioteca, ex 'retrato.json'.")
+
+    corpo: Optional[bytes] = None
+    if a == "save":
+        if not params.workflow_path:
+            return _missing(a, "workflow_path", "aponte o arquivo local do workflow a enviar.")
+        try:
+            with open(params.workflow_path, "rb") as fh:
+                corpo = fh.read()
+        except OSError as exc:
+            return _http_error(
+                "workflow_not_readable",
+                f"Não foi possível ler {params.workflow_path}: {exc}",
+                "Confira o caminho. É o mesmo arquivo que comfy_edit_graph gravou.",
+            )
+
+    alvo = f"{LIBRARY_DIR}/{params.name}" if params.name else LIBRARY_DIR
+    # safe="" para a barra da subpasta virar %2F: a rota recebe o caminho
+    # inteiro num único segmento e o decodifica do outro lado.
+    codificado = quote(alvo, safe="")
+
+    try:
+        async with httpx2.AsyncClient(base_url=base, timeout=30.0) as cliente:
+            if a == "list":
+                r = await cliente.get(
+                    "/userdata", params={"dir": LIBRARY_DIR, "recurse": "true", "full_info": "true"}
+                )
+            elif a == "get":
+                r = await cliente.get(f"/userdata/{codificado}")
+            elif a == "save":
+                r = await cliente.post(
+                    f"/userdata/{codificado}",
+                    params={"overwrite": "true" if params.overwrite else "false", "full_info": "true"},
+                    content=corpo,
+                )
+            else:  # delete
+                r = await cliente.delete(f"/userdata/{codificado}")
+    except Exception as exc:
+        # httpx2 levanta várias formas de erro de rede; todas significam a
+        # mesma coisa para quem chama, e nenhuma deve virar traceback.
+        return _http_error(
+            "server_not_running",
+            f"Não foi possível falar com o ComfyUI em {base}: {exc}",
+            "Suba o servidor com comfy_launch_server, ou passe host e port se ele "
+            "estiver em outro endereço.",
+        )
+
+    if r.status_code == 404:
+        return _http_error(
+            "workflow_not_found",
+            f"'{alvo}' não existe na biblioteca.",
+            "Liste o que existe com action='list'.",
+        )
+    if r.status_code == 409:
+        return _http_error(
+            "workflow_exists",
+            f"'{alvo}' já existe na biblioteca.",
+            "Escolha outro nome, ou passe overwrite=True depois de confirmar com o "
+            "usuário que o workflow anterior pode ser substituído.",
+        )
+    if r.status_code == 403:
+        return _http_error(
+            "path_rejected",
+            f"O ComfyUI recusou o caminho '{alvo}'.",
+            "Use um nome simples, sem '..' nem caminho absoluto.",
+        )
+    if r.status_code >= 400:
+        return _http_error(
+            "userdata_error",
+            f"O ComfyUI respondeu {r.status_code}.",
+            "Veja raw_body abaixo.",
+            raw_body=r.text[:2000],
+        )
+
+    if a == "delete":
+        dados: Any = {"deleted": alvo}
+    elif a == "get":
+        try:
+            dados = json.loads(r.text)
+        except json.JSONDecodeError:
+            dados = {"raw": r.text[:8000]}
+    else:
+        try:
+            dados = r.json()
+        except Exception:
+            dados = {"raw": r.text[:8000]}
+
+    return _truncate(
+        json.dumps({"ok": True, "command": f"library {a}", "data": dados}, indent=2, ensure_ascii=False)
+    )
 
 
 # ---------------------------------------------------------------------

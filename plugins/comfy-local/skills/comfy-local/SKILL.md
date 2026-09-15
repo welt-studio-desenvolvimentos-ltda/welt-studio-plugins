@@ -1,6 +1,6 @@
 ---
 name: comfy-local
-description: Gerar imagem, vídeo, áudio e 3D num ComfyUI local via ferramentas MCP. Use ao criar, editar, validar ou executar workflows do ComfyUI, ao investigar quais nodes, custom nodes e modelos existem na instalação, e ao produzir lotes de variações. Cobre o ciclo completo, da descoberta até a coleta das saídas.
+description: Gerar imagem, vídeo, áudio e 3D num ComfyUI local via ferramentas MCP. Use ao montar um grafo node a node, ao criar, editar, validar ou executar workflows do ComfyUI, ao investigar quais nodes, custom nodes e modelos existem na instalação, e ao produzir lotes de variações. Cobre o ciclo completo, da descoberta até a coleta das saídas.
 ---
 
 # ComfyUI local
@@ -56,9 +56,36 @@ Antes de escrever qualquer workflow:
 - `comfy_node_neighbors` caminha pelas conexões a partir de um node conhecido.
 - `comfy_show_node` traz o schema completo de uma classe.
 
-## Construir: três mecanismos
+## Construir: quatro mecanismos
 
 Escolha pela estrutura do problema, não por hábito.
+
+**Montar o grafo node a node.** `comfy_edit_graph` é o único caminho que constrói
+estrutura em vez de mexer em valores: `add_node` acrescenta pela classe, `connect`
+liga `<id>.<saída>` em `<id>.<entrada>`, `set_widget` define um valor,
+`delete_nodes` remove. Cada chamada devolve em `data.op` a operação aplicada.
+
+Use quando não existe template próximo, ou quando o que precisa mudar é a forma
+do grafo e não os parâmetros. O caminho é: `comfy_list_nodes` ou
+`comfy_node_path` para descobrir o que liga em quê, `comfy_show_node` para ver os
+slots de uma classe, e então as edições.
+
+Duas ferramentas de leitura ajudam no meio: `action: "ls_nodes"` lista id, tipo e
+título, e `action: "print"` devolve o grafo como uma linha de código por node,
+com as ligações explícitas — é a forma mais rápida de conferir o que você montou
+antes de validar.
+
+**A pessoa vê acontecer.** Com a extensão `comfyui-welt-live` instalada, cada
+edição aparece no canvas aberto na hora, e o envelope traz um bloco `live` com as
+abas alcançadas. Se vier `published: false`, o canvas não acompanhou: leia o
+`hint` e, no mínimo, publique o resultado com `comfy_workflow_library`.
+
+**Sequência que se repete vira receita.** `comfy_graph_recipe` com
+`action: "capture"` transforma um grafo que funciona no lote de operações que o
+reconstrói, com widgets promovidos a parâmetro; `apply` aplica essa receita com
+outros valores, e `foreach` gera N workflows de uma vez. É o caminho de lote
+quando a variação muda a estrutura — para variar só valores, `comfy_vary_workflow`
+é mais direto.
 
 **Template pronto.** `comfy_list_templates` e `comfy_fetch_template`. Se a
 galeria já tem algo com a forma certa, comece dali. Para um teste rápido,
@@ -129,6 +156,16 @@ Falta de dependência se resolve com `comfy_install_node` e
 `comfy_download_model`, mas **os dois mudam a instalação da pessoa** — pergunte
 antes. Custom node novo só aparece depois de reiniciar o ComfyUI.
 
+## Entregar o workflow, não o caminho do arquivo
+
+Um workflow num arquivo solto no disco não existe para quem está olhando a
+interface. `comfy_workflow_library` com `action: "save"` grava na biblioteca do
+ComfyUI e ele aparece na barra lateral de Workflows, a um clique de abrir. Feche
+sempre o ciclo assim, em vez de dizer "está em /tmp/x.json".
+
+Ela recusa sobrescrever por padrão. Se o nome já existir, escolha outro ou
+confirme com o usuário antes de passar `overwrite=True` — pode ser trabalho dele.
+
 ## Mostrar o resultado
 
 Isto é trabalho visual. O usuário decide olhando, não lendo. Assim que uma
@@ -169,3 +206,11 @@ usuário antes em material trabalhoso:
   preservar a versão anterior.
 - `comfy_vary_workflow` e `comfy_fetch_outputs` sobrescrevem arquivos de
   mesmo nome de um lote anterior. Use uma pasta por lote.
+- `comfy_edit_graph` regrava o workflow a cada edição. Com `stdout=True` ele
+  devolve o resultado sem tocar no arquivo — e, por não gravar, também não
+  publica no canvas.
+- `comfy_edit_graph` com `action: "reset_doc"` apaga nodes, ids e o histórico de
+  replay, e exige `confirm=True` justamente por isso. `clear` esvazia o grafo.
+  Pergunte antes dos dois.
+- `comfy_workflow_library` com `action: "delete"` remove da biblioteca do usuário
+  e não tem desfazer.
