@@ -1,9 +1,14 @@
 // comfyui-welt-live — carrega no canvas aberto o grafo que o agente editou.
 //
-// A guarda central: app.loadGraphData substitui o canvas inteiro. Se a
-// pessoa mexeu no grafo e não salvou, recarregar apaga esse trabalho sem
-// aviso. Então o padrão é nunca recarregar por cima de alteração pendente:
-// o grafo fica guardado e um botão aparece, e a pessoa decide.
+// A guarda central: aplicar substitui o canvas inteiro. Se a pessoa mexeu
+// no grafo e não salvou, recarregar apaga esse trabalho sem aviso. Então
+// nunca carregamos por cima de alteração que não conhecemos.
+//
+// E a recusa é silenciosa de propósito: nada aqui pede confirmação à pessoa.
+// Um canvas divergente significa que o agente editou sobre um estado velho,
+// e é ele quem conserta — relendo com comfy_read_canvas e publicando de
+// novo. Um botão de "aplicar mesmo assim" transferiria para ela a decisão
+// sobre um conflito que ela não criou.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -12,13 +17,13 @@ const EVENTO = "welt.graph";
 const EVENTO_PULL = "welt.pull";
 const CHAVE_AUTO = "welt-live.auto";
 
-let pendente = null;        // grafo recebido que ainda não foi aplicado
+let pendente = null;        // grafo em carregamento, para a fila não o descartar
 let ultimaVersao = 0;
 let ultimaAssinatura = null; // como o canvas ficou depois do nosso último carregamento
 let aplicando = null;        // promessa do carregamento em curso
 let alinhouNoBoot = false;   // o alinhamento de abertura já rodou?
 
-/** Auto-aplicar está ligado? Padrão sim; a pessoa desliga pelo botão. */
+/** Auto-aplicar está ligado? Padrão sim; desliga nas configurações. */
 function autoLigado() {
   try {
     return localStorage.getItem(CHAVE_AUTO) !== "off";
@@ -122,28 +127,47 @@ async function esperarPronto(tetoMs = 15000) {
 /**
  * Carrega o grafo e registra como o canvas ficou.
  *
- * `loadGraphData` é assíncrona — todo o frontend a chama com await. Sem
- * esperar, a assinatura sairia do estado anterior e a edição seguinte
- * pareceria alteração da pessoa.
+ * A assinatura é registrada duas vezes, e as duas importam.
+ *
+ * Na hora, ainda dentro do `try`: a partir do instante em que o canvas
+ * muda, `canvasSujo()` precisa comparar contra o resultado da NOSSA edição.
+ * Sem esta escrita, a próxima publicação — que numa sequência de edições
+ * chega antes do quadro seguinte — se compararia com o estado anterior à
+ * troca e seria recusada como se a pessoa tivesse mexido.
+ *
+ * E de novo depois de um quadro, porque o grafo ainda assenta logo após a
+ * troca; a segunda medida é a que vale dali em diante. Entre as duas há uma
+ * janela de um quadro em que uma publicação pode ser recusada à toa — erro
+ * para o lado de não apagar trabalho, que é o único aceitável aqui.
+ *
+ * Usa `graph.configure`, e NÃO `loadGraphData`. O quarto argumento deste
+ * último é a identidade do workflow, e o padrão dele — `null` — significa
+ * "workflow novo": cada publicação abria mais uma aba, primeiro com o nome
+ * do arquivo de trabalho do agente, depois como "Unsaved Workflow (2)",
+ * "(3)". Passar o workflow ativo em vez de null exigiria alcançar a store
+ * interna do frontend, que não é API de extensão.
+ *
+ * `graph.configure` é litegraph puro: troca o conteúdo do grafo que já está
+ * aberto, sem tocar em aba nem em identidade. É o que espelhar quer dizer.
+ * Em troca, não roda o pós-processamento do ComfyUI (aviso de node ausente,
+ * migração de reroute) — aceitável aqui, porque o grafo que chega saiu desta
+ * mesma instalação e passou pelo catálogo do comfy-cli.
  */
 async function aplicar(alvo) {
   if (!(await esperarPronto())) return;
   try {
-    await app.loadGraphData(alvo.graph, true, true, alvo.name ?? null);
+    app.graph.configure(alvo.graph);
+    app.graph.setDirtyCanvas(true, true);
+    ultimaAssinatura = assinatura();
   } catch (erro) {
-    // Uma falha nossa não pode derrubar o ComfyUI da pessoa. O grafo fica
-    // pendente e o botão aparece, para ela tentar quando quiser.
-    console.error("[welt-live] não consegui carregar o grafo:", erro);
-    atualizarBotao();
+    // Uma falha nossa não pode derrubar o ComfyUI da pessoa: registra e
+    // desiste. A próxima publicação do agente tenta de novo.
+    console.error("[welt-live] não consegui aplicar o grafo:", erro);
     return;
   }
   await proximoQuadro();
   ultimaAssinatura = assinatura();
-  // Só limpa o que acabamos de aplicar. Uma edição que chegou enquanto este
-  // carregamento acontecia já trocou `pendente` por um grafo mais novo, e
-  // zerar aqui a descartaria em silêncio.
   if (pendente === alvo) pendente = null;
-  atualizarBotao();
 }
 
 /**
@@ -158,34 +182,9 @@ function enfileirar(dados) {
     .catch(() => {})
     .then(async () => {
       const alvo = pendente;
-      if (!alvo) return;
-      await aplicar(alvo);
+      if (alvo) await aplicar(alvo);
     });
   return aplicando;
-}
-
-function atualizarBotao() {
-  const botao = document.getElementById("welt-live-aplicar");
-  if (!botao) return;
-  botao.hidden = pendente === null;
-  botao.textContent = pendente ? `Aplicar edição do agente (v${pendente.version})` : "";
-}
-
-function montarBotao() {
-  const botao = document.createElement("button");
-  botao.id = "welt-live-aplicar";
-  botao.hidden = true;
-  botao.style.cssText = [
-    "position:fixed", "right:16px", "z-index:1000",
-    "top:calc(16px + env(safe-area-inset-top, 0px))",
-    "padding:8px 14px", "border-radius:8px", "border:1px solid #888",
-    "background:#2d6cdf", "color:#fff", "font:600 13px system-ui,sans-serif",
-    "cursor:pointer", "box-shadow:0 2px 8px rgba(0,0,0,.3)",
-  ].join(";");
-  botao.addEventListener("click", () => {
-    if (pendente) enfileirar(pendente);
-  });
-  document.body.appendChild(botao);
 }
 
 app.registerExtension({
@@ -208,8 +207,6 @@ app.registerExtension({
   ],
 
   async setup() {
-    montarBotao();
-
     // O agente pediu o grafo que está no canvas agora.
     //
     // Se a resposta DESTA aba for a que o servidor aceitou, registramos a
@@ -260,14 +257,35 @@ app.registerExtension({
       if (!dados?.graph || dados.version === ultimaVersao) return;
       ultimaVersao = dados.version;
 
-      if (autoLigado() && !canvasSujo()) {
+      // Os dois motivos de não aplicar são distintos e não têm a mesma
+      // saída — dizer "o canvas mudou" quando o que houve foi a pessoa
+      // desligar o automático manda o agente para um conserto que nunca
+      // funciona: ele releria e republicaria em laço, e o desligado
+      // continuaria desligado.
+      if (!autoLigado()) {
+        console.warn(
+          "[welt-live] publicação não aplicada: 'Aplicar edições automaticamente' " +
+            "está desligado nas configurações do ComfyUI, em Welt Live. Não há " +
+            "aplicação manual — religue a opção para o canvas voltar a acompanhar."
+        );
+        return;
+      }
+      if (!canvasSujo()) {
         enfileirar(dados);
         return;
       }
-      // Alteração pendente no canvas: guarda e deixa a pessoa decidir, em
-      // vez de sobrescrever o que ela estava fazendo.
-      pendente = dados;
-      atualizarBotao();
+      // O canvas mudou desde a última vez que o conhecemos, então esta
+      // publicação foi montada sobre um estado velho e aplicá-la apagaria o
+      // que a pessoa fez. Recusamos — e não perguntamos nada a ela.
+      //
+      // Quem resolve é o agente: ele relê com comfy_read_canvas, refaz a
+      // edição sobre o estado atual e publica de novo, e aí a assinatura
+      // bate e entra sozinha. Pedir um clique aqui seria transferir para a
+      // pessoa um conflito que não é dela.
+      console.warn(
+        "[welt-live] publicação recusada: o canvas mudou desde a última leitura. " +
+          "O agente precisa reler com comfy_read_canvas antes de editar."
+      );
     });
 
   },
@@ -279,26 +297,39 @@ app.registerExtension({
    * grafo ali aborta a inicialização do ComfyUI. Este hook roda depois de o
    * app ter configurado o próprio grafo, que é o primeiro momento seguro.
    *
-   * Só na primeira vez — ele dispara a cada carregamento, inclusive nos
-   * nossos, e sem a trava viraria laço.
+   * Só na primeira vez. Nossas aplicações passam por `graph.configure`, que
+   * não dispara hook de extensão, mas este aqui dispara sempre que a pessoa
+   * abre outro workflow — e refazer a linha de base ali desarmaria a guarda
+   * justamente quando o agente está com o grafo anterior na mão.
    */
   async afterConfigureGraph() {
     if (alinhouNoBoot) return;
     alinhouNoBoot = true;
+
+    // O que está na tela agora vira a linha de base, e nada é carregado por
+    // cima. Dois motivos:
+    //
+    // Não há o que proteger. A página acabou de carregar, e um reload já
+    // levou junto qualquer alteração não salva — o que o ComfyUI restaurou é
+    // estado persistido dele. Tratar isso como "trabalho em risco" fazia toda
+    // abertura recusar a primeira publicação do agente sem motivo.
+    //
+    // E não há o que impor. A publicação guardada pode ser de horas atrás, de
+    // outro workflow; aplicá-la por cima do que a pessoa acabou de abrir é
+    // justamente o susto que esta extensão existe para evitar. Quando o
+    // agente precisar do que está aqui, ele lê com comfy_read_canvas.
+    //
+    // Com isso a recusa passa a acontecer só no caso que a justifica: a
+    // pessoa mexeu no canvas depois da última vez que nós o conhecemos.
+    ultimaAssinatura = assinatura();
     try {
       const r = await api.fetchApi("/welt-live/state");
       const estado = await r.json();
-      if (!estado?.graph || estado.version <= 0) return;
-      ultimaVersao = estado.version;
-      if (canvasSujo()) {
-        pendente = estado;
-        atualizarBotao();
-        return;
-      }
-      await enfileirar(estado);
+      // Só acompanha o contador, para não reaplicar uma publicação anterior
+      // quando a próxima chegar pelo websocket.
+      if (estado?.version > 0) ultimaVersao = estado.version;
     } catch {
-      // Não alinhar no boot é inofensivo: a próxima publicação chega pelo
-      // websocket de qualquer jeito.
+      // Sem o contador a próxima publicação chega igual; nada a fazer.
     }
   },
 

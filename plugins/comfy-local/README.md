@@ -175,10 +175,16 @@ A leitura vale-se da mesma guarda: ao responder, a aba registra aquele estado co
 conhecido, então a edição que o agente devolve em cima dele entra sem pedir
 confirmação. Se você mexer no canvas nesse meio tempo, a guarda volta a valer.
 
-**A extensão não sobrescreve trabalho não salvo.** `app.loadGraphData` troca o
-canvas inteiro, então com alteração pendente ela guarda o grafo e mostra um botão
-em vez de recarregar por cima. Quem prefere sempre decidir na mão desliga o
-automático pelas configurações do ComfyUI, em *Welt Live*.
+**A extensão não sobrescreve trabalho não salvo.** Aplicar troca o canvas
+inteiro, então se você mexeu no grafo depois da última vez que o agente o
+conheceu, a publicação é recusada em vez de recarregar por cima — e nada é
+perguntado a você. Quem conserta é o agente: ele relê com `comfy_read_canvas`,
+refaz a edição sobre o estado atual e publica de novo, e aí ela entra sozinha.
+
+Nas configurações do ComfyUI, em *Welt Live*, dá para desligar o espelhamento
+com **Aplicar edições automaticamente**. Desligado, ele para de vez: não há
+aplicação manual, as publicações são descartadas e só aparece um aviso no
+console do navegador. Religue a opção para o canvas voltar a acompanhar.
 
 Uma aba que não está em foco é adormecida pelo navegador, então a leitura tem 25
 segundos de prazo e uma segunda tentativa automática. Se ainda assim falhar, traga
