@@ -125,6 +125,34 @@ async function esperarPronto(tetoMs = 15000) {
 }
 
 /**
+ * Conta ao servidor o que esta aba fez com uma publicação.
+ *
+ * Sem isto a rota de publicação só sabia que transmitiu, e o agente afirmava
+ * "está na sua tela" mesmo quando toda aba tinha recusado. Quem descobria era
+ * a pessoa, olhando — o pior lugar para um erro aparecer.
+ *
+ * Quem recusa espera um instante antes de responder. O servidor aproveita a
+ * primeira resposta que chega, e com várias abas basta uma ter aplicado para
+ * a edição estar na tela; sem o atraso, a recusa de uma aba de fundo chegaria
+ * primeiro e mascararia o sucesso na aba que a pessoa está olhando.
+ */
+async function responder(token, aplicou, motivo) {
+  if (!token) return;
+  if (!aplicou) await new Promise((r) => setTimeout(r, 250));
+  try {
+    await api.fetchApi("/welt-live/applied", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, applied: aplicou, reason: motivo ?? null }),
+    });
+  } catch (erro) {
+    // Sem resposta a rota expira sozinha e devolve `applied: null`, que o
+    // agente lê como "não sei". Nada a fazer aqui além de não derrubar a aba.
+    console.error("[welt-live] não consegui reportar o resultado:", erro);
+  }
+}
+
+/**
  * Carrega o grafo e registra como o canvas ficou.
  *
  * A assinatura é registrada duas vezes, e as duas importam.
@@ -154,7 +182,10 @@ async function esperarPronto(tetoMs = 15000) {
  * mesma instalação e passou pelo catálogo do comfy-cli.
  */
 async function aplicar(alvo) {
-  if (!(await esperarPronto())) return;
+  if (!(await esperarPronto())) {
+    await responder(alvo.token, false, "canvas_ausente");
+    return;
+  }
   try {
     app.graph.configure(alvo.graph);
     app.graph.setDirtyCanvas(true, true);
@@ -163,8 +194,10 @@ async function aplicar(alvo) {
     // Uma falha nossa não pode derrubar o ComfyUI da pessoa: registra e
     // desiste. A próxima publicação do agente tenta de novo.
     console.error("[welt-live] não consegui aplicar o grafo:", erro);
+    await responder(alvo.token, false, "erro_ao_aplicar");
     return;
   }
+  await responder(alvo.token, true, null);
   await proximoQuadro();
   ultimaAssinatura = assinatura();
   if (pendente === alvo) pendente = null;
@@ -268,6 +301,7 @@ app.registerExtension({
             "está desligado nas configurações do ComfyUI, em Welt Live. Não há " +
             "aplicação manual — religue a opção para o canvas voltar a acompanhar."
         );
+        responder(dados.token, false, "espelhamento_desligado");
         return;
       }
       if (!canvasSujo()) {
@@ -286,6 +320,7 @@ app.registerExtension({
         "[welt-live] publicação recusada: o canvas mudou desde a última leitura. " +
           "O agente precisa reler com comfy_read_canvas antes de editar."
       );
+      responder(dados.token, false, "canvas_mudou");
     });
 
   },

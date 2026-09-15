@@ -45,6 +45,14 @@ EVENTO_PULL = "welt.pull"
 # a rota não ficar pendurada quando nenhuma aba respondeu de fato.
 PULL_TIMEOUT = 25.0
 
+# Quanto esperar a aba dizer o que fez com uma publicação.
+#
+# Curto de propósito, e bem menos que o PULL_TIMEOUT: aqui a aba já está
+# acordada processando o evento que acabou de chegar, enquanto na leitura ela
+# precisa serializar um grafo grande. Numa sequência de edições este teto
+# entra em cada uma, então esticá-lo custa em toda a conversa.
+APPLY_TIMEOUT = 3.0
+
 # Tamanho máximo do grafo aceito, em bytes. Um workflow grande tem alguns
 # megabytes; o teto existe para um corpo malformado não virar consumo de
 # memória sem limite.
@@ -90,11 +98,19 @@ async def _ler_json(request) -> Tuple[Any, Optional[web.Response]]:
 
 @PromptServer.instance.routes.post("/welt-live/publish")
 async def publish(request):
-    """Recebe um grafo do servidor MCP e o repassa às abas abertas.
+    """Repassa um grafo às abas abertas e espera saber se alguma aplicou.
 
-    Responde com a contagem de abas alcançadas, para quem chamou conseguir
-    dizer se alguém estava olhando — publicar sem nenhuma aba aberta não é
-    erro, mas é uma informação que muda o que o agente fala para a pessoa.
+    A espera é o ponto. Sem ela a rota só sabia que transmitiu, e respondia
+    sucesso mesmo quando toda aba recusava — o agente então afirmava "está na
+    sua tela" para uma tela que não tinha mudado, e quem descobria era a
+    pessoa. Um erro que só o usuário enxerga é pior do que um que ninguém
+    enxerga: ele custa a confiança na ferramenta inteira.
+
+    O teto é curto de propósito. A aba já está acordada processando o evento
+    que acabou de chegar, ao contrário da leitura, em que ela precisa
+    serializar um grafo grande. Passar do teto não é falha: devolve
+    `applied: null`, que quer dizer "não sei" — e não saber, dito em voz
+    alta, é melhor do que afirmar o que não se verificou.
     """
     corpo, erro = await _ler_json(request)
     if erro is not None:
@@ -107,14 +123,77 @@ async def publish(request):
     _ultimo["version"] += 1
     _ultimo["graph"] = grafo
     _ultimo["name"] = corpo.get("name")
+    versao = _ultimo["version"]
 
-    PromptServer.instance.send_sync(
-        EVENTO,
-        {"version": _ultimo["version"], "name": _ultimo["name"], "graph": grafo},
-    )
     abas = len(PromptServer.instance.sockets)
-    log.info("welt-live: grafo v%s enviado para %s aba(s)", _ultimo["version"], abas)
-    return web.json_response({"ok": True, "version": _ultimo["version"], "clients": abas})
+    if not abas:
+        return web.json_response(
+            {"ok": True, "version": versao, "clients": 0, "applied": False, "reason": "sem_aba"}
+        )
+
+    token = uuid.uuid4().hex
+    evento = asyncio.Event()
+    _confirmacoes[token] = {"event": evento, "applied": None, "reason": None}
+    try:
+        PromptServer.instance.send_sync(
+            EVENTO,
+            {"version": versao, "name": _ultimo["name"], "graph": grafo, "token": token},
+        )
+        try:
+            await asyncio.wait_for(evento.wait(), timeout=APPLY_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.info("welt-live: grafo v%s sem confirmação em %ss", versao, APPLY_TIMEOUT)
+            return web.json_response(
+                {
+                    "ok": True,
+                    "version": versao,
+                    "clients": abas,
+                    "applied": None,
+                    "reason": "sem_confirmacao",
+                }
+            )
+        c = _confirmacoes[token]
+        log.info("welt-live: grafo v%s applied=%s (%s)", versao, c["applied"], c["reason"])
+        return web.json_response(
+            {
+                "ok": True,
+                "version": versao,
+                "clients": abas,
+                "applied": c["applied"],
+                "reason": c["reason"],
+            }
+        )
+    finally:
+        _confirmacoes.pop(token, None)
+
+
+@PromptServer.instance.routes.post("/welt-live/applied")
+async def applied(request):
+    """A aba conta o que fez com a publicação: aplicou ou recusou, e por quê.
+
+    A primeira resposta vence, como no pull. Com várias abas, basta uma ter
+    aplicado para a publicação ter chegado à tela; e uma recusa isolada, numa
+    aba que a pessoa nem está olhando, não deve mascarar o sucesso na aba
+    ativa — por isso quem aplicou responde na hora e quem recusa espera um
+    instante antes de responder, do lado do JavaScript.
+    """
+    corpo, erro = await _ler_json(request)
+    if erro is not None:
+        return erro
+    if not isinstance(corpo, dict):
+        return web.json_response({"error": "corpo não é objeto"}, status=400)
+
+    token = corpo.get("token")
+    confirmacao = _confirmacoes.get(token) if isinstance(token, str) and token else None
+    if confirmacao is None or confirmacao["event"].is_set():
+        # Publicação já confirmada por outra aba, ou espera expirada. Não é
+        # erro do lado de lá.
+        return web.json_response({"ok": True, "ignored": True})
+
+    confirmacao["applied"] = bool(corpo.get("applied"))
+    confirmacao["reason"] = corpo.get("reason")
+    confirmacao["event"].set()
+    return web.json_response({"ok": True})
 
 
 @PromptServer.instance.routes.get("/welt-live/state")
@@ -134,6 +213,9 @@ async def state(request):
 # por vez fica registrado aqui pelo token, para duas leituras simultâneas
 # não pegarem a resposta uma da outra.
 # ---------------------------------------------------------------------
+
+# Publicações aguardando a aba dizer se aplicaram, pelo token.
+_confirmacoes: dict[str, dict] = {}
 
 _pedidos: dict[str, dict] = {}
 

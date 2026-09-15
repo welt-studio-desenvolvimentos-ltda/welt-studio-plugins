@@ -75,10 +75,20 @@ título, e `action: "print"` devolve o grafo como uma linha de código por node,
 com as ligações explícitas — é a forma mais rápida de conferir o que você montou
 antes de validar.
 
-**A pessoa vê acontecer.** Com a extensão `comfyui-welt-live` instalada, cada
-edição aparece no canvas aberto na hora, e o envelope traz um bloco `live` com as
-abas alcançadas. Se vier `published: false`, o canvas não acompanhou: leia o
-`hint` e, no mínimo, publique o resultado com `comfy_workflow_library`.
+**A pessoa vê acontecer, e você fica sabendo se viu.** Com a extensão
+`comfyui-welt-live` instalada, cada edição aparece no canvas aberto na hora, e o
+envelope traz um bloco `live` com o que a aba respondeu. São três respostas, e
+elas não são a mesma coisa:
+
+| `published` | O que houve | O que fazer |
+|---|---|---|
+| `true` | a aba aplicou | pode dizer que está na tela |
+| `false` | a aba recusou, e `reason` diz por quê | siga o `hint`; em `canvas_mudou`, releia com `comfy_read_canvas`, refaça a edição sobre o que veio e publique de novo |
+| `null` | ninguém confirmou a tempo | **você não sabe.** Não afirme que chegou; confira com `comfy_read_canvas` ou diga que não deu para verificar |
+
+O `null` é o que mais exige disciplina. É tentador tratá-lo como sucesso, e é
+exatamente aí que se afirma para a pessoa que a tela mudou quando não mudou —
+ela descobre olhando, que é o pior lugar para um erro aparecer.
 
 **Partir do que está na tela.** Quando ela disser "edita o workflow que está
 aberto", "muda esse prompt aí" ou qualquer coisa que se refira ao que ela está

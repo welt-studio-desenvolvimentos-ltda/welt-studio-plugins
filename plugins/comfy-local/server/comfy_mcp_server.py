@@ -1939,6 +1939,38 @@ async def comfy_list_fragments(params: FragmentsInput) -> str:
     return await _cli(args, timeout=120)
 
 
+# O que fazer diante de cada recusa da aba. O hint é o que separa uma falha
+# acionável de um beco: sem ele o agente afirma sucesso ou desiste, e nos dois
+# casos quem descobre o problema é a pessoa, olhando a tela.
+_HINTS_LIVE = {
+    "canvas_mudou": (
+        "A pessoa mexeu no canvas depois da sua última leitura, então esta edição "
+        "saiu de um estado velho e a aba a recusou para não apagar o trabalho dela. "
+        "Releia com comfy_read_canvas, refaça a edição sobre o que veio, e publique "
+        "de novo."
+    ),
+    "espelhamento_desligado": (
+        "A opção 'Aplicar edições automaticamente' está desligada nas configurações "
+        "do ComfyUI, em Welt Live. Não há aplicação manual: republicar não adianta. "
+        "Grave com comfy_workflow_library e peça para abrir pela barra lateral, ou "
+        "avise que a opção precisa ser religada."
+    ),
+    "sem_aba": (
+        "Nenhuma aba do ComfyUI está aberta, então não há tela para espelhar. O "
+        "arquivo em disco está correto; grave com comfy_workflow_library se quiser "
+        "que fique disponível na barra lateral."
+    ),
+    "canvas_ausente": (
+        "A aba respondeu antes de o canvas existir. Costuma ser página ainda "
+        "carregando: tente publicar de novo em alguns segundos."
+    ),
+    "erro_ao_aplicar": (
+        "A aba falhou ao aplicar o grafo; o motivo está no console do navegador. O "
+        "arquivo em disco está correto."
+    ),
+}
+
+
 async def _publish_live(workflow_path: str, host: Optional[str], port: Optional[int]) -> dict:
     """Manda o grafo recém-editado para o canvas aberto do ComfyUI.
 
@@ -1961,7 +1993,8 @@ async def _publish_live(workflow_path: str, host: Optional[str], port: Optional[
         with open(workflow_path, "r", encoding="utf-8") as fh:
             grafo = json.load(fh)
         base = _http_base(host, port)
-        async with httpx2.AsyncClient(base_url=base, timeout=10.0) as cliente:
+        # O teto acomoda a espera da rota pela confirmação da aba, com folga.
+        async with httpx2.AsyncClient(base_url=base, timeout=20.0) as cliente:
             r = await cliente.post(
                 "/welt-live/publish",
                 json={"graph": grafo, "name": os.path.basename(workflow_path)},
@@ -1976,8 +2009,31 @@ async def _publish_live(workflow_path: str, host: Optional[str], port: Optional[
             }
         if r.status_code >= 400:
             return {"published": False, "reason": f"http_{r.status_code}"}
+
         dados = r.json()
-        return {"published": True, "clients": dados.get("clients"), "version": dados.get("version")}
+        # `published` agora carrega o que a aba respondeu, e não o que nós
+        # conseguimos transmitir. Uma extensão antiga, sem a rota de
+        # confirmação, não devolve o campo: aí cai em None, que é o valor
+        # honesto — transmitimos e não sabemos o que aconteceu.
+        aplicado = dados.get("applied")
+        resultado = {
+            "published": aplicado,
+            "clients": dados.get("clients"),
+            "version": dados.get("version"),
+        }
+        motivo = dados.get("reason")
+        if motivo:
+            resultado["reason"] = motivo
+        if aplicado is False:
+            resultado["hint"] = _HINTS_LIVE.get(
+                motivo, "A aba não aplicou a edição; o arquivo em disco está correto."
+            )
+        elif aplicado is None:
+            resultado["hint"] = (
+                "A aba não confirmou a tempo, então não dá para afirmar que a edição "
+                "está na tela. Confira com comfy_read_canvas antes de dizer que chegou."
+            )
+        return resultado
     except Exception as exc:
         return {"published": False, "reason": f"{type(exc).__name__}: {exc}"}
 
