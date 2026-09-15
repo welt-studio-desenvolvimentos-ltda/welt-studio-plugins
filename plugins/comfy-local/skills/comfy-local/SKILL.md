@@ -1,6 +1,6 @@
 ---
 name: comfy-local
-description: Gerar imagem, vídeo, áudio e 3D num ComfyUI local via ferramentas MCP. Use ao montar um grafo node a node, ao criar, editar, validar ou executar workflows do ComfyUI, ao investigar quais nodes, custom nodes e modelos existem na instalação, e ao produzir lotes de variações. Cobre o ciclo completo, da descoberta até a coleta das saídas.
+description: Gerar imagem, vídeo, áudio e 3D num ComfyUI local via ferramentas MCP. Use ao ler e editar o workflow que a pessoa tem aberto no canvas, ao montar um grafo node a node, ao criar, editar, validar ou executar workflows do ComfyUI, ao investigar quais nodes, custom nodes e modelos existem na instalação, e ao produzir lotes de variações. Cobre o ciclo completo, da descoberta até a coleta das saídas.
 ---
 
 # ComfyUI local
@@ -80,12 +80,23 @@ edição aparece no canvas aberto na hora, e o envelope traz um bloco `live` com
 abas alcançadas. Se vier `published: false`, o canvas não acompanhou: leia o
 `hint` e, no mínimo, publique o resultado com `comfy_workflow_library`.
 
+**Partir do que está na tela.** Quando ela disser "edita o workflow que está
+aberto", "muda esse prompt aí" ou qualquer coisa que se refira ao que ela está
+vendo, comece por `comfy_read_canvas`: ele grava num arquivo o grafo do canvas
+neste momento, sem exigir que ela salve antes, e esse arquivo é o `workflow_path`
+das edições seguintes. Também exige a extensão. Para um workflow salvo e não
+aberto, use `comfy_workflow_library` com `action: "get"`.
+
 **Sequência que se repete vira receita.** `comfy_graph_recipe` com
 `action: "capture"` transforma um grafo que funciona no lote de operações que o
 reconstrói, com widgets promovidos a parâmetro; `apply` aplica essa receita com
 outros valores, e `foreach` gera N workflows de uma vez. É o caminho de lote
 quando a variação muda a estrutura — para variar só valores, `comfy_vary_workflow`
 é mais direto.
+
+O `apply` espelha no canvas pela mesma regra do `comfy_edit_graph`, e traz o
+mesmo bloco `live`. O `capture` e o `foreach` não: um escreve receita, o outro
+gera N arquivos, e nenhum dos dois tem um grafo único a mostrar.
 
 **Template pronto.** `comfy_list_templates` e `comfy_fetch_template`. Se a
 galeria já tem algo com a forma certa, comece dali. Para um teste rápido,
@@ -214,3 +225,8 @@ usuário antes em material trabalhoso:
   Pergunte antes dos dois.
 - `comfy_workflow_library` com `action: "delete"` remove da biblioteca do usuário
   e não tem desfazer.
+- `comfy_edit_graph` e `comfy_graph_recipe` com `action: "apply"` publicam no
+  canvas o `workflow_path` que editaram, seja ele o que está na tela ou não.
+  Editar um arquivo sem relação com o que a pessoa está vendo faz o canvas dela
+  pular para ele. Na dúvida, leia com `comfy_read_canvas` antes e edite o que
+  veio de lá.

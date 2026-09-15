@@ -9,6 +9,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const EVENTO = "welt.graph";
+const EVENTO_PULL = "welt.pull";
 const CHAVE_AUTO = "welt-live.auto";
 
 let pendente = null;        // grafo recebido que ainda não foi aplicado
@@ -74,6 +75,22 @@ function canvasSujo() {
   if (agora === null) return true;
   if (ultimaAssinatura !== null) return agora !== ultimaAssinatura;
   return (app.graph?._nodes?.length ?? 0) > 0;
+}
+
+/**
+ * Nome do workflow aberto, quando dá para descobrir.
+ *
+ * É informativo — serve para o agente dizer "editei o seu image_flux2" em
+ * vez de "editei o grafo". Não há API de extensão para isto, então tentamos
+ * o caminho conhecido e desistimos em silêncio: um nome ausente não impede
+ * nada.
+ */
+function nomeDoWorkflow() {
+  try {
+    return app.graph?.extra?.workflow_name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Espera o navegador desenhar, para a assinatura sair já assentada. */
@@ -192,6 +209,47 @@ app.registerExtension({
 
   async setup() {
     montarBotao();
+
+    // O agente pediu o grafo que está no canvas agora.
+    //
+    // Se a resposta DESTA aba for a que o servidor aceitou, registramos a
+    // assinatura como se nós mesmos tivéssemos carregado: o agente passa a
+    // conhecer este estado, então a edição que ele devolver em cima dele não
+    // é sobrescrita indevida. Se a pessoa mexer no canvas entre o pedido e a
+    // volta, a assinatura muda de novo e a guarda volta a segurar.
+    //
+    // O pedido vai para todas as abas, mas só uma resposta é aproveitada. Por
+    // isso esperamos o servidor dizer qual: marcar como conhecida uma aba que
+    // perdeu a corrida deixaria o trabalho não salvo dela sem guarda, e a
+    // próxima edição do agente o apagaria — o oposto do que esta extensão
+    // existe para garantir.
+    api.addEventListener(EVENTO_PULL, async (evento) => {
+      const token = evento.detail?.token;
+      if (!token) return;
+      let grafo = null;
+      let assinaturaEnviada = null;
+      try {
+        grafo = app.graph?.serialize() ?? null;
+        assinaturaEnviada = assinatura();
+      } catch (erro) {
+        console.error("[welt-live] não consegui serializar o canvas:", erro);
+      }
+      try {
+        const r = await api.fetchApi("/welt-live/canvas", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, graph: grafo, name: nomeDoWorkflow() }),
+        });
+        const resposta = await r.json();
+        if (resposta?.ok && !resposta.ignored && assinaturaEnviada !== null) {
+          ultimaAssinatura = assinaturaEnviada;
+        }
+      } catch (erro) {
+        // Sem resposta, a rota do lado servidor expira sozinha e devolve um
+        // erro com hint. Nada a fazer aqui além de não derrubar a aba.
+        console.error("[welt-live] não consegui responder ao pedido:", erro);
+      }
+    });
 
     api.addEventListener(EVENTO, (evento) => {
       const dados = evento.detail;

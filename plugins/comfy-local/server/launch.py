@@ -30,11 +30,18 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Teto de espera pela sessão que está provisionando primeiro. Instalar o SDK
 # do MCP num venv novo leva segundos; três minutos cobre uma rede ruim.
 LOCK_TIMEOUT_SECONDS = 180
+
+# Marca desta sessão dentro da trava. Sem ela, uma sessão lenta que teve a
+# trava tomada apagaria no fim a trava de quem a tomou, e uma terceira sessão
+# entraria a provisionar o mesmo venv em paralelo — exatamente o que a trava
+# existe para impedir.
+LOCK_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
@@ -98,7 +105,11 @@ def acquire_lock(lock: Path, venv: Path, stamp: Path) -> bool:
     avisou = False
     while True:
         try:
-            os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, LOCK_TOKEN.encode("utf-8"))
+            finally:
+                os.close(fd)
         except FileExistsError:
             if not needs_install(venv, stamp):
                 return False  # a outra sessão terminou; nada a fazer
@@ -112,7 +123,7 @@ def acquire_lock(lock: Path, venv: Path, stamp: Path) -> bool:
                 # esperar — com o prazo reiniciado, porque a trava agora é de
                 # alguém que acabamos de ver vivo.
                 log("trava de provisionamento velha demais, assumindo")
-                release_lock(lock)
+                release_lock(lock, force=True)
                 deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
                 continue
 
@@ -130,7 +141,21 @@ def acquire_lock(lock: Path, venv: Path, stamp: Path) -> bool:
         return False
 
 
-def release_lock(lock: Path) -> None:
+def release_lock(lock: Path, force: bool = False) -> None:
+    """Solta a trava, mas só a que é desta sessão.
+
+    `force=True` é o caminho de tomar uma trava abandonada: ali a trava é de
+    outro de propósito. Fora dele, apagar sem conferir faria uma sessão lenta
+    — que demorou mais que o teto e teve a trava tomada — apagar no fim a
+    trava da sessão que a tomou, liberando uma terceira a provisionar o mesmo
+    venv em paralelo.
+    """
+    if not force:
+        try:
+            if lock.read_text(encoding="utf-8").strip() != LOCK_TOKEN:
+                return
+        except OSError:
+            return
     try:
         lock.unlink()
     except OSError:

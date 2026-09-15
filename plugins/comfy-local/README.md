@@ -2,17 +2,18 @@
 
 Plugin de Claude Code que dirige um ComfyUI local por MCP.
 
-Empacota um servidor MCP com 41 ferramentas mais uma skill que ensina o
+Empacota um servidor MCP com 42 ferramentas mais uma skill que ensina o
 fluxo de trabalho. A maior parte é wrapper sobre o `comfy-cli`, que emite
 um envelope JSON estável em todo comando, incluindo um campo `hint` nos
 erros dizendo como corrigir; a biblioteca de workflows fala HTTP direto com
 o ComfyUI, porque é a rota `/userdata` que alimenta a barra lateral da
 interface.
 
-O que ele tem e o `comfy-mcp` oficial da Comfy Org não: **edição de grafo**.
-Montar um workflow node a node, ligar saída em entrada e ver isso aparecer no
-canvas — os verbos existem no `comfy-cli` e nenhum outro servidor MCP os
-expõe.
+O que ele tem e o `comfy-mcp` oficial da Comfy Org não: **edição de grafo nos
+dois sentidos**. Ler o workflow que está aberto no canvas, montá-lo node a node,
+ligar saída em entrada, e ver cada mudança aparecer na tela — sem o usuário
+precisar salvar nada. Os verbos de edição existem no `comfy-cli` e nenhum outro
+servidor MCP os expõe.
 
 ## Pré requisitos
 
@@ -67,6 +68,7 @@ variável `MCP_TIMEOUT` antes de abrir o Claude Code.
 
 | Grupo | Ferramentas |
 |---|---|
+| Canvas aberto | `read_canvas` |
 | Edição de grafo | `edit_graph`, `graph_recipe` |
 | Biblioteca | `workflow_library` |
 | Estado | `server_info`, `launch_server`, `stop_server` |
@@ -89,6 +91,9 @@ contexto em toda sessão, e estas compartilham o mesmo arquivo de trabalho.
 | `comfy_edit_graph` | `add_node`, `connect`, `set_widget`, `delete_nodes`, `clear`, `reset_doc`, `ls_nodes`, `print` |
 | `comfy_graph_recipe` | `apply`, `capture`, `foreach` |
 | `comfy_workflow_library` | `list`, `get`, `save`, `delete` |
+
+`comfy_read_canvas` não tem `action`: lê o grafo aberto na aba e grava num
+arquivo, que é o começo do ciclo.
 
 Duas mudam a instalação e pedem confirmação do usuário antes:
 `comfy_download_model` grava gigabytes em disco e `comfy_install_node` instala
@@ -133,10 +138,19 @@ ser entendida.
 8188 teria o log lido da instância errada bem na hora de diagnosticar
 uma falha.
 
-## Ver a edição acontecer no canvas
+## O ciclo de mão dupla
 
-As ferramentas de edição gravam um arquivo. Para o ComfyUI que você tem aberto
-acompanhar cada passo, instale a extensão que vem junto:
+As ferramentas de edição trabalham num arquivo. A extensão que vem junto liga
+esse arquivo ao ComfyUI que você tem aberto, nos dois sentidos:
+
+```
+comfy_read_canvas   →  o grafo da sua aba vira um arquivo
+comfy_edit_graph    →  o agente edita esse arquivo
+                    →  cada edição volta para a sua tela
+```
+
+Sem ela, o agente só alcança o que já foi salvo em disco ou na biblioteca. Com
+ela, ele edita o que você está vendo, e você vê acontecer. Instale assim:
 
 ```
 cp -r plugins/comfy-local/comfyui-extension /caminho/do/ComfyUI/custom_nodes/comfyui-welt-live
@@ -146,19 +160,32 @@ Reinicie o ComfyUI. A partir daí, toda edição de `comfy_edit_graph` aparece n
 canvas na hora, e o envelope traz um bloco `live` dizendo quantas abas foram
 alcançadas.
 
+Com mais de uma aba aberta, a primeira que responder ao pedido de leitura é a que
+vale — a publicação, essa vai para todas.
+
 Isto precisa ser uma extensão porque não há como comandar a aba aberta de fora:
 o handler de `/ws` do ComfyUI aceita do cliente apenas mensagens `feature_flags`
 e descarta o resto, e nenhuma rota faz o servidor transmitir um evento arbitrário
 aos frontends. `PromptServer.send_sync` é o único caminho, e só existe dentro do
-processo do ComfyUI.
+processo do ComfyUI. A leitura tem o mesmo motivo pelo avesso: o grafo aberto vive
+no navegador, não no processo do ComfyUI, então o jeito é pedir pelo websocket e
+esperar a aba devolver por HTTP.
+
+A leitura vale-se da mesma guarda: ao responder, a aba registra aquele estado como
+conhecido, então a edição que o agente devolve em cima dele entra sem pedir
+confirmação. Se você mexer no canvas nesse meio tempo, a guarda volta a valer.
 
 **A extensão não sobrescreve trabalho não salvo.** `app.loadGraphData` troca o
 canvas inteiro, então com alteração pendente ela guarda o grafo e mostra um botão
 em vez de recarregar por cima. Quem prefere sempre decidir na mão desliga o
 automático pelas configurações do ComfyUI, em *Welt Live*.
 
-Sem a extensão nada quebra: a edição grava normalmente e o bloco `live` diz que o
-canvas não acompanhou. Nesse caso, publique com `comfy_workflow_library`
+Uma aba que não está em foco é adormecida pelo navegador, então a leitura tem 25
+segundos de prazo e uma segunda tentativa automática. Se ainda assim falhar, traga
+a janela do ComfyUI para a frente.
+
+Sem a extensão nada quebra: a leitura devolve `extensao_ausente`, a edição grava
+normalmente e o bloco `live` diz que o canvas não acompanhou. Nesse caso, publique com `comfy_workflow_library`
 (`action: "save"`) e abra pela barra lateral de Workflows — que é o caminho que
 funciona em qualquer ComfyUI, com ou sem extensão.
 

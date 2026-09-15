@@ -2257,7 +2257,10 @@ async def comfy_graph_recipe(params: GraphRecipeInput) -> str:
 
     Returns:
         str: envelope JSON com a receita, o resultado da aplicação, ou os
-            caminhos dos workflows gerados.
+            caminhos dos workflows gerados. O apply traz também o bloco
+            `live` com o resultado do espelhamento no canvas, pela mesma
+            regra do comfy_edit_graph; capture e foreach não espelham, por
+            não terem um grafo único a mostrar.
     """
     a = params.action
     if a == "apply":
@@ -2294,7 +2297,20 @@ async def comfy_graph_recipe(params: GraphRecipeInput) -> str:
         ]
 
     _routing(args, params.host, params.port)
-    return await _cli(args, timeout=300)
+    envelope = await _cli_obj(args, timeout=300)
+
+    # apply espelha no canvas pela mesma regra do comfy_edit_graph: só o que
+    # foi gravado, e só quando deu certo. A simetria é o ponto — os dois
+    # terminam carregando o grafo inteiro na tela, então não há lote mais
+    # perigoso que uma op solta, e a guarda de canvas sujo protege os dois
+    # igual. Quem não quer tocar no arquivo usa stdout=True, e aí não há o
+    # que publicar.
+    #
+    # capture e foreach ficam de fora por não terem grafo a mostrar: o
+    # primeiro escreve uma receita, o segundo gera N workflows.
+    if a == "apply" and envelope.get("ok") and not params.stdout and params.workflow_path:
+        envelope["live"] = await _publish_live(params.workflow_path, params.host, params.port)
+    return _truncate(json.dumps(envelope, indent=2, ensure_ascii=False))
 
 
 # ---------------------------------------------------------------------
@@ -2492,6 +2508,166 @@ async def comfy_workflow_library(params: WorkflowLibraryInput) -> str:
 
     return _truncate(
         json.dumps({"ok": True, "command": f"library {a}", "data": dados}, indent=2, ensure_ascii=False)
+    )
+
+
+# ---------------------------------------------------------------------
+# Leitura do canvas aberto
+#
+# O par de _publish_live, no sentido contrário. O grafo que a pessoa está
+# vendo vive no navegador, não no processo do ComfyUI nem em disco — sem
+# isto, editar o que ela abriu exigiria que ela salvasse antes.
+# ---------------------------------------------------------------------
+
+
+class ReadCanvasInput(Base):
+    out_path: str = Field(
+        ...,
+        description="Onde gravar o grafo lido. É o arquivo que você passa depois "
+        "para comfy_edit_graph em workflow_path.",
+        min_length=1,
+    )
+    host: Optional[str] = Field(default=None, description="Host do ComfyUI, padrão 127.0.0.1.")
+    port: Optional[int] = Field(default=None, description="Porta do ComfyUI, padrão 8188.", ge=1, le=65535)
+
+
+@_tool(
+    name="comfy_read_canvas",
+    title="Ler o grafo que está aberto no ComfyUI",
+    read_only=False,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+async def comfy_read_canvas(params: ReadCanvasInput) -> str:
+    """Traz para um arquivo o grafo que a pessoa está vendo no canvas agora.
+
+    É o começo do ciclo de mão dupla: leia o canvas, edite com
+    comfy_edit_graph, e cada edição volta para a tela dela. Sem isto, você
+    só alcança o que já foi salvo em disco ou na biblioteca — e pedir para
+    a pessoa salvar antes de cada conversa é atrito que não precisa existir.
+
+    Use quando ela disser "edita o workflow que está aberto", "muda esse
+    prompt aí", ou qualquer coisa que se refira ao que está na tela. Para um
+    workflow salvo e não aberto, comfy_workflow_library com action="get".
+
+    Grava o arquivo em out_path, substituindo o que houver lá. Exige a
+    extensão comfyui-welt-live instalada e ao menos uma aba aberta.
+
+    Ao responder, a extensão registra este estado como conhecido, então as
+    edições que você fizer em cima dele entram no canvas sem pedir
+    confirmação. Se a pessoa mexer na tela nesse meio tempo, a guarda volta
+    a valer e ela decide.
+
+    Args:
+        params (ReadCanvasInput):
+            - out_path (str): onde gravar o grafo
+            - host, port (Optional): endereço do servidor
+
+    Returns:
+        str: envelope JSON com o caminho gravado, o nome do workflow quando
+            conhecido, e a contagem de nodes e ligações.
+    """
+    import httpx2
+
+    base = _http_base(params.host, params.port)
+
+    async def pedir():
+        async with httpx2.AsyncClient(base_url=base, timeout=60.0) as cliente:
+            return await cliente.post("/welt-live/pull")
+
+    # Duas tentativas de propósito: o navegador adormece a aba que não está
+    # em foco, e a do ComfyUI quase sempre está atrás da janela onde a pessoa
+    # conversa com o agente. Uma aba adormecida costuma acordar no primeiro
+    # pedido e responder no segundo — e uma leitura falhar por isso, com o
+    # ComfyUI no ar e tudo certo, é o tipo de erro que faz o plugin parecer
+    # quebrado quando não está.
+    try:
+        r = await pedir()
+        if r.status_code == 504:
+            r = await pedir()
+    except Exception as exc:
+        return _http_error(
+            "server_not_running",
+            f"Não foi possível falar com o ComfyUI em {base}: {exc}",
+            "Suba o servidor com comfy_launch_server, ou passe host e port se ele "
+            "estiver em outro endereço.",
+        )
+
+    if r.status_code == 404:
+        return _http_error(
+            "extensao_ausente",
+            "A rota de leitura não existe neste ComfyUI.",
+            "Instale comfyui-welt-live no custom_nodes/ do ComfyUI e reinicie. Sem "
+            "ela, leia um workflow salvo com comfy_workflow_library action='get'.",
+        )
+    if r.status_code == 409:
+        return _http_error(
+            "sem_aba",
+            "Nenhuma aba do ComfyUI está aberta.",
+            "Peça para a pessoa abrir o ComfyUI no navegador; sem aba não há canvas "
+            "para ler.",
+        )
+    if r.status_code == 504:
+        return _http_error(
+            "sem_resposta",
+            "A aba não respondeu ao pedido a tempo, nem na segunda tentativa.",
+            "Traga a janela do ComfyUI para a frente e tente de novo: o navegador "
+            "adormece aba fora de foco. Se persistir, recarregue a página — é o "
+            "sintoma de a extensão não ter carregado nela.",
+        )
+    if r.status_code >= 400:
+        return _http_error(
+            "pull_error",
+            f"O ComfyUI respondeu {r.status_code}.",
+            "Veja raw_body abaixo.",
+            raw_body=r.text[:2000],
+        )
+
+    try:
+        corpo = r.json()
+    except Exception:
+        return _http_error(
+            "resposta_invalida",
+            "A resposta da leitura não é JSON.",
+            "Veja raw_body abaixo.",
+            raw_body=r.text[:2000],
+        )
+
+    grafo = corpo.get("graph")
+    if not isinstance(grafo, dict):
+        return _http_error(
+            "canvas_vazio",
+            "A aba respondeu sem grafo.",
+            "O canvas pode estar vazio, ou a serialização falhou; o console do "
+            "navegador traz o motivo.",
+        )
+
+    try:
+        with open(params.out_path, "w", encoding="utf-8") as fh:
+            json.dump(grafo, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        return _http_error(
+            "out_path_not_writable",
+            f"Não foi possível gravar em {params.out_path}: {exc}",
+            "Escolha um caminho em que você consiga escrever.",
+        )
+
+    return _truncate(
+        json.dumps(
+            {
+                "ok": True,
+                "command": "read canvas",
+                "data": {
+                    "wrote": params.out_path,
+                    "name": corpo.get("name"),
+                    "nodes": len(grafo.get("nodes") or []),
+                    "links": len(grafo.get("links") or []),
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
     )
 
 
