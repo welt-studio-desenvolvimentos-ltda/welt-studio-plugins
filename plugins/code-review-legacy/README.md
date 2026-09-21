@@ -34,8 +34,12 @@ O embutido só roda na sessão principal se `CLAUDE_CODE_REPORT_FINDINGS` estive
 
 1. `context: fork` + `agent: code-review-legacy:reviewer`: a skill roda em background num subagente `code-review-legacy:reviewer` (o `general-purpose` sem a diretriz de não re-delegar; o embutido usa o `general-purpose`). Esse subagente **não** recebe a conversa, só o prompt da skill.
 2. O fork dispara os finders e verifiers como subagentes dele. A profundidade máxima padrão é 3.
-3. A sessão principal recebe **só a última mensagem** do fork, pela notificação da task. Por isso a saída é um JSON em texto e não usa `ReportFindings`.
-4. `/code-review-legacy` é disparado direto pelo comando digitado, como o embutido: o resultado chega só pela notificação da task.
+3. A sessão principal recebe **só o relatório final** do fork (pela notificação da task ou pelo hand-back, ver o passo 4), nunca o que ele leu nem os subagentes dele. Por isso a saída é um JSON em texto e não usa `ReportFindings`.
+4. `/code-review-legacy` é disparado direto pelo comando digitado, como o embutido. Como o relatório chega depende de o fork ter disparado subagentes:
+   - **sem fan-out**, o texto vem dentro da própria notificação da task;
+   - **com fan-out, em modo auto**, o fork lança os finders em background e encerra o turno para esperar. Cada filho que termina retoma o fork pelo caminho de mensagem, que liga o `SubagentHandback`. O relatório então chega como mensagem "[Subagent hand-back]" de `@code-review-legacy-code-review-legacy`, e a notificação só aponta para ela.
+
+   O `/code-review` embutido segue o mesmo caminho quando o fork dele dispara subagentes; não é diferença do plugin.
 
 O prompt é montado na hora por `scripts/build_prompt.py`, injetado pelo `` !`…` `` do `SKILL.md`, portando o `ps()` do embutido:
 
