@@ -6,7 +6,7 @@ células do Sonnet 5 — as receitas com fan-out de subagentes em todos os níve
 O texto de cada trecho mora em `recipe/`; aqui só se decide o que entra.
 
 Uso (via injeção `!` do SKILL.md):
-    build_prompt.py <level> '<argumentos crus do usuário>'
+    build_prompt.py '<CLAUDE_PLUGIN_DATA>' '<CLAUDE_EFFORT>' '<argumentos crus do usuário>'
 """
 
 import math
@@ -16,12 +16,9 @@ import subprocess
 import sys
 from collections import namedtuple
 
+from level import LEVELS, KNOWN_FLAGS, clean_raw, notice, resolve, write_last_level
+
 RECIPE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recipe")
-
-LEVELS = ("low", "medium", "high", "xhigh", "max")
-
-# Flags que `nt()` reconhece; o resto dos argumentos é o alvo.
-KNOWN_FLAGS = ("comment", "fix", "post", "no-post")
 
 # Níveis cuja célula Sonnet 5 tem finderBudgetHint.
 FINDER_BUDGET_LEVELS = ("high", "xhigh", "max")
@@ -48,21 +45,6 @@ def load(name):
 
 def fragments(names):
     return "\n".join(load(n) for n in names)
-
-
-def clean_raw(raw):
-    """Desfaz o que o Claude Code faz com `$ARGUMENTS` antes de rodar o comando `!` do SKILL.md."""
-    rest = raw.strip()
-    # `Ffe()` só substitui `$ARGUMENTS` quando a invocação traz args; sem eles o placeholder chega cru.
-    if rest == "$ARGUMENTS":
-        return ""
-    # `uw()` escapa `!` em início de palavra: `!9` chega como `\!9`.
-    # Desfazer aqui devolve o alvo digitado (o atalho `!N` de MR do GitLab depende disso).
-    return re.sub(r"(^|\s)\\!", r"\1!", rest)
-
-
-def is_flag(token):
-    return token.startswith("--") and token[2:] in KNOWN_FLAGS
 
 
 def parse_args(raw):
@@ -260,15 +242,24 @@ def build(level, raw_args, count_lines=count_diff_lines, host=None):
 
 
 def main(argv):
-    if len(argv) < 2:
-        print("Could not build the review prompt: missing level argument. Stop and tell the user the "
-              "code-review-legacy skill is misconfigured.")
+    if len(argv) != 4:
+        print("Could not build the review prompt: expected plugin data dir, session effort and arguments. "
+              "Do not review; stop and tell the user the code-review-legacy skill is misconfigured.")
         return 0
+    # Placeholder que o Claude Code não substituiu chega cru; tratar como ausente, não como caminho/valor.
+    # Só nos valores de ambiente: os argumentos do usuário são texto livre.
+    data_dir, session_effort = (value if not value.startswith("${") else "" for value in argv[1:3])
+    route = resolve(argv[3], data_dir, session_effort)
     try:
-        sys.stdout.write(build(argv[1], " ".join(argv[2:])))
+        prompt = notice(route) + build(route.level, route.args)
     except PromptBuildError as exc:
         # Sem prompt válido não há revisão: o fork relata a falha em vez de revisar com texto errado.
         print("Could not build the review prompt: {}. Do not review; stop and tell the user this.".format(exc))
+        return 0
+    # Como o `onUserTypedArgs()` do embutido: só um nível digitado vira o "último".
+    if route.source == "explicit":
+        write_last_level(data_dir, route.level)
+    sys.stdout.write(prompt)
     return 0
 
 
