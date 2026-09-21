@@ -1,4 +1,5 @@
 import inspect
+import json
 import os
 import re
 import sys
@@ -10,6 +11,10 @@ import level
 
 PLUGIN_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 SKILLS_DIR = os.path.join(PLUGIN_ROOT, "skills")
+
+with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as _fh:
+    # O Claude Code namespaceia os agentes de plugin pelo nome do plugin, não pelo da skill.
+    PLUGIN_NAME = json.load(_fh)["name"]
 
 FIX_MARKER = "## Applying fixes (--fix)"
 GITHUB_MARKER = "## Posting to GitHub (--comment)"
@@ -179,6 +184,22 @@ def script_path(module):
     return os.path.relpath(os.path.abspath(inspect.getfile(module)), PLUGIN_ROOT).replace(os.sep, "/")
 
 
+class ReviewerAgentTest(unittest.TestCase):
+    """A base do fork é o `general-purpose` do Claude Code sem a diretriz que desencoraja delegar."""
+
+    def test_agent_referenced_by_skill_exists(self):
+        fields, _ = read_frontmatter(os.path.join(SKILLS_DIR, level.SKILL_NAME, "SKILL.md"))
+        plugin, _, agent = fields["agent"].partition(":")
+        self.assertEqual(plugin, PLUGIN_NAME)
+        agent_fields, body = read_frontmatter(os.path.join(PLUGIN_ROOT, "agents", agent + ".md"))
+        self.assertEqual(agent_fields["name"], agent)
+        self.assertEqual(agent_fields["model"], "inherit")
+        # Sem `tools:` o agente herda todas as ferramentas, incluindo a `Agent` que a receita usa.
+        self.assertNotIn("tools", agent_fields)
+        self.assertNotIn("re-delegate", body)
+        self.assertIn("You are an agent for Claude Code", body)
+
+
 class SkillFilesTest(unittest.TestCase):
     """A skill repete o nome do script no `allowed-tools` e no comando `!`; este teste é a trava de que batem."""
 
@@ -187,6 +208,7 @@ class SkillFilesTest(unittest.TestCase):
         fields, body = read_frontmatter(os.path.join(SKILLS_DIR, level.SKILL_NAME, "SKILL.md"))
         self.assertEqual(fields["name"], level.SKILL_NAME)
         self.assertEqual(fields["context"], "fork")
+        self.assertEqual(fields["agent"], "{}:{}".format(PLUGIN_NAME, "reviewer"))
         # Sem `effort:` o fork herda o esforço da sessão, e `${CLAUDE_EFFORT}` é o fallback do nível.
         self.assertNotIn("effort", fields)
         allowed = re.match(r"^Bash\((.*):\*\)$", fields["allowed-tools"])

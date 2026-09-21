@@ -22,6 +22,12 @@ Sem nível, reusa o último que você digitou; sem histórico, usa o esforço da
 
 No embutido, o nível tem dois papéis: escolhe a receita e define o esforço de raciocínio do fork (`getEffort()`). Aqui ele escolhe só a receita. Numa skill de plugin o esforço só viria de um `effort:` fixo no frontmatter, e o `getEffort()` que o embutido usa para variá-lo pelo nível não existe para skills do usuário. Sem `effort:`, o fork herda o esforço da sessão.
 
+## Base do fork: `general-purpose` sem o freio de delegação
+
+O fork do embutido roda sobre o agente `general-purpose`, cujo system prompt termina com "You are already the dedicated agent for this task. Do the work directly — do not re-delegate your entire assignment to another single subagent." Em fork, isso colide com a receita ("Run 8 independent finder angles via the `Agent` tool"): o modelo tende a revisar sozinho ou a agrupar os ângulos em poucos agentes. Antes da v2.1.218 o `/code-review` rodava inline, na sessão principal, sem esse texto.
+
+Por isso a skill declara `agent: code-review-legacy:reviewer`, e `agents/reviewer.md` é o prompt do `general-purpose` copiado literalmente, **sem** essa última diretriz. A receita continua idêntica à do binário; muda só a base do fork.
+
 ## Como roda (igual ao embutido quando ele cai em fork)
 
 O embutido só roda na sessão principal se `CLAUDE_CODE_REPORT_FINDINGS` estiver setado (ou em coordinator mode). Fora disso ele roda em fork, e esta skill reproduz esse caminho:
@@ -46,10 +52,10 @@ O texto de cada trecho fica em `recipe/`, copiado literalmente do binário. Quem
 - Os argumentos entram **crus** no comando `!`, entre aspas simples. O Claude Code só neutraliza `!` (`uw()`): um `!` em início de palavra chega ao script como `\!`, e o script desfaz isso, então o atalho `!N` de MR do GitLab funciona. Dois caracteres continuam quebrando a skill:
   - Uma aspa simples (`'`) fecha as aspas e o que vier depois vira shell. Quem segura isso é a checagem de permissão que o Claude Code aplica a todo comando `!` (ver "Permission checks on injected commands" na doc de skills). O `allowed-tools` pré-aprova só `python3 …/build_prompt.py`; um trecho encadeado não casa com essa regra e segue o modo de permissão da sessão:
     - **fora do modo auto**, qualquer resultado que não seja `allow` aborta a skill (`Shell command permission check failed…`);
-    - **no modo auto**, a skill não aborta: carrega com a instrução para o modelo rodar o comando, e essa chamada passa pelas checagens normais do modo auto. O plugin não contorna o modo auto; ele só pré-aprova o próprio script.
+    - **no modo auto** também aborta: a doc de skills diz que a exceção do modo auto (carregar e deixar o modelo rodar o comando) não vale para "a forked skill that sets `agent`", que é o caso desta. O plugin só pré-aprova o próprio script.
   - Uma crase (`` ` ``) encerra o próprio comando `!`, que o Claude Code extrai até a primeira crase. O que sobra é uma aspa simples sem par, e o shell recusa. Por isso ``/code-review-legacy high `main` `` falha, embora o script saiba tirar as crases do alvo quando elas chegam até ele.
 
-  Resultado: argumento com `'` ou `` ` `` faz a skill falhar (ou, no modo auto, cair na checagem do classificador) em vez de revisar.
+  Resultado: argumento com `'` ou `` ` `` faz a skill falhar em vez de revisar.
 - Se ainda existirem skills com o mesmo nome em `~/.claude/skills/`, elas têm precedência sobre as do plugin.
 
 ## Testes

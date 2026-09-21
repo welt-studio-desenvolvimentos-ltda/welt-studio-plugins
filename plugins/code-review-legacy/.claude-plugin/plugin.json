@@ -1,7 +1,7 @@
 {
   "name": "code-review-legacy",
   "displayName": "Code Review Legacy",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "As receitas do /code-review com fan-out de subagentes em todos os níveis (células Sonnet 5 do Claude Code 2.1.278), executadas pelo mesmo caminho de fork do embutido: prompt montado na hora, --fix e --comment só quando passados, resultado em texto para a sessão principal.",
   "author": {
     "name": "Welt Studio Desenvolvimentos LTDA",

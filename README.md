@@ -12,6 +12,7 @@ A collection of Claude Code plugins for enhanced development experience.
 | `spec-gate` | 0.3.0 | Spec-driven flow gated by the product owner: six named phases and six human decision gates |
 | `comfy-local` | 0.2.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution, job and VRAM diagnostics, and output collection |
 | `auditoria` | 1.2.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
+| `code-review-legacy` | 0.4.0 | `/code-review-legacy [level]`: the `/code-review` recipes with subagent fan-out at every level (Sonnet 5 cells of Claude Code 2.1.278), run through the same fork path as the built-in |
 
 ## Installation
 
@@ -34,12 +35,13 @@ A collection of Claude Code plugins for enhanced development experience.
 /plugin install spec-gate@welt-studio-plugins
 /plugin install comfy-local@welt-studio-plugins
 /plugin install auditoria@welt-studio-plugins
+/plugin install code-review-legacy@welt-studio-plugins
 ```
 
 ## Prerequisites
 
-Only some plugins need anything installed. `hookify`, `spec-gate` and `auditoria` run on what
-Claude Code already provides.
+Only some plugins need anything installed. `hookify`, `spec-gate`, `auditoria` and `code-review-legacy`
+run on what Claude Code already provides.
 
 ### TypeScript LSP
 
