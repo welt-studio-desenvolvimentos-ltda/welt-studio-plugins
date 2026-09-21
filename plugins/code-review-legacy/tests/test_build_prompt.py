@@ -23,12 +23,8 @@ GITLAB_MARKER = "## Posting to GitLab (--comment)"
 
 
 def build(level, raw="", host="github.com"):
-    # Sem contagem de diff e com host fixo: o teste não depende do repositório onde roda.
-    return bp.build(level, raw, count_lines=lambda _target: None, host=host)
-
-
-def must_not_count(_target):
-    raise AssertionError("diff counted for a level without the finder budget hint")
+    # Host fixo: o teste não depende do origin do repositório onde roda.
+    return bp.build(level, raw, host=host)
 
 
 class ParseArgsTest(unittest.TestCase):
@@ -133,9 +129,19 @@ class RecipeTest(unittest.TestCase):
         self.assertIn("at maximum effort", build("max"))
         self.assertIn("at extra-high effort", build("xhigh"))
 
-    def test_finder_hint_comes_before_recipe(self):
-        text = bp.build("high", "", count_lines=lambda _target: 300, host="github.com")
-        self.assertTrue(text.startswith("The committed diff (@{upstream}...HEAD) is about 300 lines"))
+    def test_one_agent_per_angle_on_fan_out_levels(self):
+        # Desvio deliberado: sem isso o modelo agrupa os ângulos em poucos agentes.
+        for level, count in (("medium", 8), ("high", 8), ("xhigh", 10), ("max", 10)):
+            text = build(level)
+            self.assertIn("Spawn exactly one `Agent` call (subagent_type `general-purpose`) per angle below — "
+                          "{} calls in total".format(count), text, level)
+            self.assertEqual(text.count("\n### "), count, level)
+        self.assertNotIn("per angle below", build("low"))
+
+    def test_no_finder_budget_hint(self):
+        # A dica "spawn about N" contradiria a instrução de um agente por ângulo.
+        for level in bp.LEVELS:
+            self.assertNotIn("finder subagents (min 2, max 8)", build(level), level)
 
     def test_invalid_level(self):
         with self.assertRaises(bp.PromptBuildError):
@@ -143,29 +149,6 @@ class RecipeTest(unittest.TestCase):
 
     def test_target_enters_prompt(self):
         self.assertTrue(build("medium", "42").startswith("Review target: `42`"))
-
-
-class FinderBudgetTest(unittest.TestCase):
-    def test_bounds(self):
-        self.assertIn("about 2 finder subagents", bp.finder_budget("high", "", lambda _target: 10))
-        self.assertIn("about 8 finder subagents", bp.finder_budget("high", "", lambda _target: 5000))
-        self.assertIn("about 4 finder subagents", bp.finder_budget("max", "", lambda _target: 600))
-
-    def test_without_target_is_a_floor(self):
-        self.assertIn("treat this as a floor", bp.finder_budget("xhigh", "", lambda _target: 300))
-
-    def test_with_target(self):
-        self.assertIn("This diff is about 300 lines", bp.finder_budget("xhigh", "main...HEAD", lambda _target: 300))
-
-    def test_unknown_size_gives_no_hint(self):
-        self.assertEqual(bp.finder_budget("high", "", lambda _target: None), "")
-
-    def test_only_high_and_above_and_without_running_git(self):
-        self.assertEqual(bp.finder_budget("medium", "", must_not_count), "")
-        self.assertEqual(bp.finder_budget("low", "", must_not_count), "")
-
-    def test_target_that_is_not_a_range_is_not_counted(self):
-        self.assertIsNone(bp.count_diff_lines("123"))
 
 
 def read_frontmatter(path):

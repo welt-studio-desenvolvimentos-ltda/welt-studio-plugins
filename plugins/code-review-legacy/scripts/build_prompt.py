@@ -9,7 +9,6 @@ Uso (via injeção `!` do SKILL.md):
     build_prompt.py '<CLAUDE_PLUGIN_DATA>' '<CLAUDE_EFFORT>' '<argumentos crus do usuário>'
 """
 
-import math
 import os
 import re
 import subprocess
@@ -19,9 +18,6 @@ from collections import namedtuple
 from level import LEVELS, KNOWN_FLAGS, clean_raw, notice, resolve, write_last_level
 
 RECIPE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recipe")
-
-# Níveis cuja célula Sonnet 5 tem finderBudgetHint.
-FINDER_BUDGET_LEVELS = ("high", "xhigh", "max")
 
 CORRECTNESS_3 = ("angles/a_line_by_line", "angles/b_removed_behavior", "angles/c_cross_file")
 CORRECTNESS_5 = CORRECTNESS_3 + ("angles/d_language_pitfall", "angles/e_wrapper_proxy")
@@ -68,6 +64,11 @@ def output(cap):
     return load("output").replace("{{cap}}", str(cap))
 
 
+def one_agent_per_angle(angles):
+    """Desvio deliberado do binário: o texto original permite agrupar ângulos, e o modelo agrupa."""
+    return load("one_agent_per_angle").replace("{{count}}", str(len(angles)))
+
+
 def recipe_medium_high(level):
     """`fn` (medium) e `_n` (high) com o Agent disponível."""
     if level == "medium":
@@ -87,10 +88,12 @@ def recipe_medium_high(level):
         "Run **8 independent finder angles** via the `Agent` tool. Each\n"
         "surfaces **up to 6 candidate findings** with `file`, `line`, a one-line\n"
         "`summary`, and a concrete `failure_scenario`. {fallback}\n\n"
+        "{per_angle}\n"
         "{angles}\n{cleanup_shape}\n{pass_through}\n{verify}\n{output}"
     ).format(
         tag=tag, lead_in=lead_in, phase0=load("phase0_gather"), fallback=load("agent_fallback"),
-        angles=fragments(CORRECTNESS_3 + CLEANUP), cleanup_shape=load("cleanup_shape"),
+        per_angle=one_agent_per_angle(CORRECTNESS_3 + CLEANUP), angles=fragments(CORRECTNESS_3 + CLEANUP),
+        cleanup_shape=load("cleanup_shape"),
         pass_through=load("pass_through"), verify=verify, output=output(cap),
     )
 
@@ -108,10 +111,12 @@ def recipe_xhigh_max(level):
         "surfaces **up to 8 candidate findings**. Do NOT let one angle's conclusions\n"
         "suppress another's — if two angles flag the same line for different reasons,\n"
         "record both. {fallback}\n\n"
+        "{per_angle}\n"
         "{angles}\n{cleanup_shape}\n{verify}\n{single_vote}\n{sweep}\n{output}"
     ).format(
         level=level, intensity=intensity, phase0=load("phase0_gather"), fallback=load("agent_fallback"),
-        angles=fragments(CORRECTNESS_5 + CLEANUP), cleanup_shape=load("cleanup_shape"),
+        per_angle=one_agent_per_angle(CORRECTNESS_5 + CLEANUP), angles=fragments(CORRECTNESS_5 + CLEANUP),
+        cleanup_shape=load("cleanup_shape"),
         verify=load("verify_precision"), single_vote=load("recall_single_vote"),
         sweep=load("sweep"), output=output(15),
     )
@@ -123,55 +128,6 @@ def recipe(level):
     if level in ("medium", "high"):
         return recipe_medium_high(level)
     return recipe_xhigh_max(level)
-
-
-def count_diff_lines(target):
-    """Porta de `ys()`: linhas adicionadas+removidas do range, ou None."""
-    if not target:
-        rev = "@{upstream}...HEAD"
-    elif len(target) <= 256 and re.match(r"^[@\w][@\w./~^-]*\.\.\.?[@\w][@\w./~^-]*$", target):
-        rev = target
-    else:
-        return None
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="none", GIT_NO_LAZY_FETCH="1",
-               GIT_SSH_COMMAND="ssh -o BatchMode=yes")
-    try:
-        # Nomes de arquivo não são necessariamente UTF-8 nem da codificação do locale; só os números importam.
-        proc = subprocess.run(
-            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.askPass=", "diff",
-             "--no-ext-diff", "--no-textconv", "--numstat", "--end-of-options", rev, "--"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=5,
-            encoding="utf-8", errors="replace",
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    total = 0
-    for line in proc.stdout.splitlines():
-        match = re.match(r"^(\d+)\t(\d+)\t", line)
-        if match:
-            total += int(match.group(1)) + int(match.group(2))
-    return total or None
-
-
-def finder_budget(level, target, count_lines):
-    """Porta de `gs()`: dica de quantos finders disparar, dado o tamanho do diff.
-
-    Só conta o diff nos níveis que têm a dica, para não rodar git à toa em low e medium.
-    """
-    if level not in FINDER_BUDGET_LEVELS:
-        return ""
-    lines = count_lines(target)
-    if lines is None:
-        return ""
-    budget = max(2, min(8, math.ceil(lines / 150)))
-    if not target:
-        return ("The committed diff (@{{upstream}}...HEAD) is about {} lines. Uncommitted changes aren't counted here, "
-                "so treat this as a floor — start with about {} finder subagents (min 2, max 8) and scale up if "
-                "Phase 0 finds additional working-tree scope.\n\n").format(lines, budget)
-    return ("This diff is about {} lines. Spawn about {} finder subagents (min 2, max 8) — scale your investigation "
-            "depth to the diff size rather than using a fixed large fleet.\n\n").format(lines, budget)
 
 
 GITLAB_MR_URL = re.compile(r"^(https?://[^/\s]+(?::\d{1,5})?(?:/[^/\s]+)+)/-/merge_requests/\d")
@@ -226,7 +182,7 @@ def post_notice(args):
             "Tell the user this in one short line.)\n\n").format(consequence)
 
 
-def build(level, raw_args, count_lines=count_diff_lines, host=None):
+def build(level, raw_args, host=None):
     if level not in LEVELS:
         raise PromptBuildError("unknown level '{}'; valid: {}".format(level, ", ".join(LEVELS)))
     args = parse_args(raw_args)
@@ -234,7 +190,6 @@ def build(level, raw_args, count_lines=count_diff_lines, host=None):
     return "".join((
         post_notice(args),
         target_line,
-        finder_budget(level, args.target, count_lines),
         recipe(level),
         comment_section(args.target, host) if args.comment else "",
         load("fix") if args.fix else "",

@@ -76,7 +76,6 @@ class MainTest(unittest.TestCase):
 
     def run_main(self, raw, effort="medium", data_dir=None):
         with mock.patch("sys.stdout", new=StringIO()) as out, \
-                mock.patch.object(build_prompt, "count_diff_lines", lambda _target: None), \
                 mock.patch.object(build_prompt, "origin_host", lambda: "github.com"):
             build_prompt.main(["build_prompt.py", self.data_dir if data_dir is None else data_dir, effort, raw])
         return out.getvalue()

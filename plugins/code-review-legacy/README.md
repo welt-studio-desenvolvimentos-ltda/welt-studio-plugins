@@ -46,9 +46,14 @@ O prompt é montado na hora por `scripts/build_prompt.py`, injetado pelo `` !`�
 - `--fix` e `--comment` entram **só** quando passados.
 - `--comment` usa GitLab (`glab`) quando o alvo é uma URL de MR, é `!N` ou o `origin` é GitLab; nos outros casos usa GitHub.
 - `--post` só vale para o ultra: é ignorado, com um aviso de uma linha.
-- Em high, xhigh e max entra a dica de quantos finders disparar, `ceil(linhas do diff / 150)`, entre 2 e 8.
 
-O texto de cada trecho fica em `recipe/`, copiado literalmente do binário. Quem decide o que entra é o script.
+O texto de cada trecho fica em `recipe/`, copiado literalmente do binário, com uma exceção (abaixo). Quem decide o que entra é o script.
+
+## Desvios deliberados do binário
+
+- **Um agente por ângulo** (`recipe/one_agent_per_angle.md`): "Run 8 independent finder angles via the `Agent` tool" pede 8 *ângulos*, não 8 agentes, e o modelo agrupa. Medido no mesmo diff: 8 finders numa execução via `claude -p`, ~6 na CLI interativa, 3 no VS Code. A frase extra, logo após o parágrafo da Phase 1, manda exatamente um `Agent` `general-purpose` por ângulo (8 em medium/high, 10 em xhigh/max).
+- **Sem a dica de finders**: o `gs()` do embutido acrescenta "Spawn about ⌈linhas/150⌉ finder subagents (min 2, max 8) — … rather than using a fixed large fleet", que contradiz a frase acima. Ela só existe nas células do Sonnet 5; foi removida.
+- **Agente-base `reviewer`** (seção acima).
 
 ## Limitações conhecidas
 
