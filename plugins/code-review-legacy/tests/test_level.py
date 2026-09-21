@@ -46,6 +46,11 @@ class ResolveTest(unittest.TestCase):
         self.remember("ultra")
         self.assertEqual(level.resolve("", self.data_dir, "low").source, "session")
 
+    def test_non_utf8_last_level_is_ignored(self):
+        with open(os.path.join(self.data_dir, level.LAST_LEVEL_FILE), "wb") as fh:
+            fh.write(b"\xff\xfe")
+        self.assertEqual(level.resolve("", self.data_dir, "low").source, "session")
+
     def test_unrecognized_level_stays_in_target(self):
         result = level.resolve("mediun 42", self.data_dir, "low")
         self.assertEqual((result.level, result.args, result.unrecognized), ("low", "mediun 42", "mediun"))

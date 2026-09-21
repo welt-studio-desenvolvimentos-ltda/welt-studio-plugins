@@ -44,10 +44,12 @@ O texto de cada trecho fica em `recipe/`, copiado literalmente do binário. Quem
 
 - Não há variante "sem a ferramenta `Agent`". Se a skill for chamada perto do limite de profundidade, vale a frase de fallback da receita: o fork executa os ângulos sozinho, em sequência.
 - Os argumentos entram **crus** no comando `!`, entre aspas simples. O Claude Code só neutraliza `!` (`uw()`): um `!` em início de palavra chega ao script como `\!`, e o script desfaz isso, então o atalho `!N` de MR do GitLab funciona. Dois caracteres continuam quebrando a skill:
-  - Uma aspa simples (`'`) fecha as aspas e o que vier depois vira shell. O que contém isso é a checagem de permissão: o comando `!` passa pela mesma checagem do Bash (`nf()`), e qualquer resultado que não seja `allow` aborta a skill. Como o `allowed-tools` só libera `python3 …/build_prompt.py`, um trecho encadeado não é aprovado automaticamente.
+  - Uma aspa simples (`'`) fecha as aspas e o que vier depois vira shell. Quem segura isso é a checagem de permissão que o Claude Code aplica a todo comando `!` (ver "Permission checks on injected commands" na doc de skills). O `allowed-tools` pré-aprova só `python3 …/build_prompt.py`; um trecho encadeado não casa com essa regra e segue o modo de permissão da sessão:
+    - **fora do modo auto**, qualquer resultado que não seja `allow` aborta a skill (`Shell command permission check failed…`);
+    - **no modo auto**, a skill não aborta: carrega com a instrução para o modelo rodar o comando, e essa chamada passa pelas checagens normais do modo auto. O plugin não contorna o modo auto; ele só pré-aprova o próprio script.
   - Uma crase (`` ` ``) encerra o próprio comando `!`, que o Claude Code extrai até a primeira crase. O que sobra é uma aspa simples sem par, e o shell recusa. Por isso ``/code-review-legacy high `main` `` falha, embora o script saiba tirar as crases do alvo quando elas chegam até ele.
 
-  Resultado: argumento com `'` ou `` ` `` faz a skill falhar ou pedir permissão, em vez de revisar.
+  Resultado: argumento com `'` ou `` ` `` faz a skill falhar (ou, no modo auto, cair na checagem do classificador) em vez de revisar.
 - Se ainda existirem skills com o mesmo nome em `~/.claude/skills/`, elas têm precedência sobre as do plugin.
 
 ## Testes

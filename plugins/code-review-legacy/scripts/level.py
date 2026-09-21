@@ -46,7 +46,8 @@ def read_last_level(data_dir):
     if not data_dir:
         return None
     try:
-        with open(os.path.join(data_dir, LAST_LEVEL_FILE), encoding="utf-8") as fh:
+        # `errors="replace"`: arquivo corrompido com bytes inválidos vira valor fora de LEVELS, não exceção.
+        with open(os.path.join(data_dir, LAST_LEVEL_FILE), encoding="utf-8", errors="replace") as fh:
             level = fh.read().strip()
     except OSError:
         return None
