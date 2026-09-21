@@ -1,4 +1,5 @@
 import inspect
+import json
 import os
 import re
 import sys
@@ -6,10 +7,10 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import build_prompt as bp
+import route
 
 PLUGIN_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 SKILLS_DIR = os.path.join(PLUGIN_ROOT, "skills")
-SKILL_PREFIX = "code-review-legacy-"
 
 FIX_MARKER = "## Applying fixes (--fix)"
 GITHUB_MARKER = "## Posting to GitHub (--comment)"
@@ -175,29 +176,55 @@ def read_frontmatter(path):
     return fields, match.group(2).strip()
 
 
+def script_path(module):
+    return os.path.relpath(os.path.abspath(inspect.getfile(module)), PLUGIN_ROOT).replace(os.sep, "/")
+
+
 class SkillFilesTest(unittest.TestCase):
-    """Cada SKILL.md repete o nível em três lugares; este teste é a trava de que os três batem."""
+    """Cada SKILL.md repete o nível e o script em vários lugares; este teste é a trava de que batem."""
 
-    def test_one_skill_per_level(self):
-        self.assertEqual(sorted(os.listdir(SKILLS_DIR)), sorted(SKILL_PREFIX + level for level in bp.LEVELS))
+    def allowed_prefix(self, fields, label):
+        allowed = re.match(r"^Bash\((.*):\*\)$", fields["allowed-tools"])
+        if allowed is None:
+            self.fail("{}: allowed-tools is not a Bash(<prefix>:*) rule".format(label))
+        return allowed.group(1)
 
-    def test_skill_invokes_script_with_its_own_level(self):
-        script = os.path.relpath(os.path.abspath(inspect.getfile(bp)), PLUGIN_ROOT).replace(os.sep, "/")
+    def test_one_visible_skill_plus_one_hidden_per_level(self):
+        expected = [route.LEVEL_SKILL_PREFIX.rstrip("-")] + [route.LEVEL_SKILL_PREFIX + level for level in bp.LEVELS]
+        self.assertEqual(sorted(os.listdir(SKILLS_DIR)), sorted(expected))
+
+    def test_visible_skill_routes_inline(self):
+        name = route.LEVEL_SKILL_PREFIX.rstrip("-")
+        fields, body = read_frontmatter(os.path.join(SKILLS_DIR, name, "SKILL.md"))
+        self.assertEqual(fields["name"], name)
+        self.assertNotIn("context", fields)
+        self.assertNotIn("user-invocable", fields)
+        # Esforço fixo aqui mascararia o `${CLAUDE_EFFORT}` da sessão, que é o fallback do nível.
+        self.assertNotIn("effort", fields)
+        prefix = self.allowed_prefix(fields, name)
+        self.assertTrue(prefix.endswith("/" + script_path(route)))
+        self.assertEqual(body, "!`{} '${{CLAUDE_PLUGIN_DATA}}' '${{CLAUDE_EFFORT}}' '$ARGUMENTS'`".format(prefix))
+
+    def test_level_skills_are_hidden_forks_with_their_own_effort(self):
         hints = set()
         for level in bp.LEVELS:
-            fields, body = read_frontmatter(os.path.join(SKILLS_DIR, SKILL_PREFIX + level, "SKILL.md"))
-            self.assertEqual(fields["name"], SKILL_PREFIX + level)
+            name = route.LEVEL_SKILL_PREFIX + level
+            fields, body = read_frontmatter(os.path.join(SKILLS_DIR, name, "SKILL.md"))
+            self.assertEqual(fields["name"], name)
             self.assertEqual(fields["effort"], level)
             self.assertEqual(fields["context"], "fork")
+            self.assertEqual(fields["user-invocable"], "false")
             hints.add(fields["argument-hint"])
-            allowed = re.match(r"^Bash\((.*):\*\)$", fields["allowed-tools"])
-            if allowed is None:
-                self.fail("{}: allowed-tools is not a Bash(<prefix>:*) rule".format(level))
-            command_prefix = allowed.group(1)
-            self.assertTrue(command_prefix.endswith("/" + script), level)
+            prefix = self.allowed_prefix(fields, level)
+            self.assertTrue(prefix.endswith("/" + script_path(bp)), level)
             # O comando `!` precisa começar pelo prefixo liberado, senão a checagem de permissão aborta a skill.
-            self.assertEqual(body, "!`{} {} '$ARGUMENTS'`".format(command_prefix, level))
+            self.assertEqual(body, "!`{} {} '$ARGUMENTS'`".format(prefix, level))
         self.assertEqual(len(hints), 1, hints)
+
+    def test_router_targets_plugin_name(self):
+        with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            name = json.load(fh)["name"]
+        self.assertEqual(route.level_skill("high"), "{}:{}high".format(name, route.LEVEL_SKILL_PREFIX))
 
 
 if __name__ == "__main__":

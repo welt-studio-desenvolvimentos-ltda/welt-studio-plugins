@@ -50,15 +50,24 @@ def fragments(names):
     return "\n".join(load(n) for n in names)
 
 
-def parse_args(raw):
-    """Porta de `nn()` + `nt()` + `no()`: extrai flags e normaliza o alvo."""
+def clean_raw(raw):
+    """Desfaz o que o Claude Code faz com `$ARGUMENTS` antes de rodar o comando `!` do SKILL.md."""
     rest = raw.strip()
     # `Ffe()` só substitui `$ARGUMENTS` quando a invocação traz args; sem eles o placeholder chega cru.
     if rest == "$ARGUMENTS":
-        rest = ""
-    # `uw()` escapa `!` em início de palavra antes de montar o comando `!` do SKILL.md: `!9` chega como `\!9`.
+        return ""
+    # `uw()` escapa `!` em início de palavra: `!9` chega como `\!9`.
     # Desfazer aqui devolve o alvo digitado (o atalho `!N` de MR do GitLab depende disso).
-    rest = re.sub(r"(^|\s)\\!", r"\1!", rest)
+    return re.sub(r"(^|\s)\\!", r"\1!", rest)
+
+
+def is_flag(token):
+    return token.startswith("--") and token[2:] in KNOWN_FLAGS
+
+
+def parse_args(raw):
+    """Porta de `nn()` + `nt()` + `no()`: extrai flags e normaliza o alvo."""
+    rest = clean_raw(raw)
     flags = set()
     for flag in KNOWN_FLAGS:
         stripped = re.sub(r"(?:^|\s)--{}(?=\s|$)".format(re.escape(flag)), "", rest)
