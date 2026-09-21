@@ -12,7 +12,7 @@ A collection of Claude Code plugins for enhanced development experience.
 | `spec-gate` | 0.3.0 | Spec-driven flow gated by the product owner: six named phases and six human decision gates |
 | `comfy-local` | 0.2.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution, job and VRAM diagnostics, and output collection |
 | `auditoria` | 1.2.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
-| `code-review-legacy` | 0.4.0 | `/code-review-legacy [level]`: the `/code-review` recipes with subagent fan-out at every level (Sonnet 5 cells of Claude Code 2.1.278), run through the same fork path as the built-in |
+| `code-review-legacy` | 0.4.0 | `/code-review-legacy [level]`: the `/code-review` recipes with subagent fan-out at every level (Sonnet 5 cells of Claude Code 2.1.278), run through the built-in's fork path on a base agent without the no-re-delegation directive |
 
 ## Installation
 

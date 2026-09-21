@@ -1,6 +1,6 @@
 # code-review-legacy
 
-As receitas do `/code-review` com fan-out de subagentes em **todos** os níveis. São as células do Sonnet 5 no Claude Code 2.1.278, executadas pelo mesmo caminho que o embutido usa.
+As receitas do `/code-review` com fan-out de subagentes em **todos** os níveis. São as células do Sonnet 5 no Claude Code 2.1.278, executadas pelo mesmo caminho de fork que o embutido usa, sobre um agente-base sem o freio de delegação (ver abaixo).
 
 ## Por que existe
 
@@ -26,13 +26,13 @@ No embutido, o nível tem dois papéis: escolhe a receita e define o esforço de
 
 O fork do embutido roda sobre o agente `general-purpose`, cujo system prompt termina com "You are already the dedicated agent for this task. Do the work directly — do not re-delegate your entire assignment to another single subagent." Em fork, isso colide com a receita ("Run 8 independent finder angles via the `Agent` tool"): o modelo tende a revisar sozinho ou a agrupar os ângulos em poucos agentes. Antes da v2.1.218 o `/code-review` rodava inline, na sessão principal, sem esse texto.
 
-Por isso a skill declara `agent: code-review-legacy:reviewer`, e `agents/reviewer.md` é o prompt do `general-purpose` copiado literalmente, **sem** essa última diretriz. A receita continua idêntica à do binário; muda só a base do fork.
+Por isso a skill declara `agent: code-review-legacy:reviewer`, e `agents/reviewer.md` é o prompt do `general-purpose` copiado literalmente, **sem** essa última diretriz. Como o `general-purpose`, ele não declara `model:` nem `tools:`: segue `CLAUDE_CODE_SUBAGENT_MODEL` quando setado (senão, o modelo da sessão) e herda todas as ferramentas. A receita continua idêntica à do binário; muda só a base do fork.
 
-## Como roda (igual ao embutido quando ele cai em fork)
+## Como roda (como o embutido quando ele cai em fork, exceto pelo agente-base)
 
 O embutido só roda na sessão principal se `CLAUDE_CODE_REPORT_FINDINGS` estiver setado (ou em coordinator mode). Fora disso ele roda em fork, e esta skill reproduz esse caminho:
 
-1. `context: fork`: a skill roda num subagente `general-purpose` em background. Esse subagente **não** recebe a conversa, só o prompt da skill.
+1. `context: fork` + `agent: code-review-legacy:reviewer`: a skill roda em background num subagente `code-review-legacy:reviewer` (o `general-purpose` sem a diretriz de não re-delegar; o embutido usa o `general-purpose`). Esse subagente **não** recebe a conversa, só o prompt da skill.
 2. O fork dispara os finders e verifiers como subagentes dele. A profundidade máxima padrão é 3.
 3. A sessão principal recebe **só a última mensagem** do fork, pela notificação da task. Por isso a saída é um JSON em texto e não usa `ReportFindings`.
 4. `/code-review-legacy` é disparado direto pelo comando digitado, como o embutido: o resultado chega só pela notificação da task.
@@ -56,6 +56,7 @@ O texto de cada trecho fica em `recipe/`, copiado literalmente do binário. Quem
   - Uma crase (`` ` ``) encerra o próprio comando `!`, que o Claude Code extrai até a primeira crase. O que sobra é uma aspa simples sem par, e o shell recusa. Por isso ``/code-review-legacy high `main` `` falha, embora o script saiba tirar as crases do alvo quando elas chegam até ele.
 
   Resultado: argumento com `'` ou `` ` `` faz a skill falhar em vez de revisar.
+- O `code-review-legacy:reviewer` aparece na lista de agentes de toda sessão com o plugin instalado: o frontmatter de agente não tem campo para escondê-lo, e negar `Agent(code-review-legacy:reviewer)` nas permissões bloquearia também o fork desta skill. Só a `description` pede que ele não seja usado direto; se outro agente o escolher, ganha um `general-purpose` sem o freio de delegação, limitado pela profundidade máxima.
 - Se ainda existirem skills com o mesmo nome em `~/.claude/skills/`, elas têm precedência sobre as do plugin.
 
 ## Testes
