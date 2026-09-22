@@ -9,6 +9,7 @@ Uso (via injeção `!` do SKILL.md):
     build_prompt.py '<CLAUDE_PLUGIN_DATA>' '<CLAUDE_EFFORT>' '<argumentos crus do usuário>'
 """
 
+import io
 import os
 import re
 import subprocess
@@ -218,5 +219,13 @@ def main(argv):
     return 0
 
 
+def use_utf8_streams():
+    """O Claude Code lê a saída do `!` como UTF-8; no Windows o padrão do console é cp1252, que não tem `→`."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
+
+
 if __name__ == "__main__":
+    use_utf8_streams()
     sys.exit(main(sys.argv))

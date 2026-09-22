@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,20 @@ class MainTest(unittest.TestCase):
         with mock.patch("sys.stdout", new=StringIO()) as out:
             build_prompt.main(["build_prompt.py"])
         self.assertIn("misconfigured", out.getvalue())
+
+
+class WindowsConsoleTest(unittest.TestCase):
+    """No Windows o console usa cp1252; a receita tem `→`, que não existe nessa tabela."""
+
+    def test_script_writes_utf8_even_on_cp1252_console(self):
+        data_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, data_dir)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "build_prompt.py")
+        env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
+        proc = subprocess.run([sys.executable, script, data_dir, "low", "low"], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertIn("low effort → 1 diff pass", proc.stdout.decode("utf-8"))
 
 
 if __name__ == "__main__":
