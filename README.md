@@ -13,6 +13,7 @@ A collection of Claude Code plugins for enhanced development experience.
 | `comfy-local` | 0.2.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution, job and VRAM diagnostics, and output collection |
 | `auditoria` | 1.2.0 | Adversarial auditor: verifies claims independently and questions choices, with a severity-graded verdict |
 | `code-review-legacy` | 0.7.1 | `/code-review-legacy [level]`: the `/code-review` recipes with subagent fan-out at every level (Sonnet 5 cells of Claude Code 2.1.278), run through the built-in's fork path on a base agent without the no-re-delegation directive; the fork waits for its finders and returns only the final report |
+| `route-guard` | 0.1.0 | Implementation watcher: the approved plan becomes a route of steps with scope, done criteria and dependencies; hooks block out-of-scope edits before they happen, accept a step only when its criteria pass in a script, block stopping with open steps, and escalate after three failures |
 
 ## Installation
 
@@ -36,6 +37,7 @@ A collection of Claude Code plugins for enhanced development experience.
 /plugin install comfy-local@welt-studio-plugins
 /plugin install auditoria@welt-studio-plugins
 /plugin install code-review-legacy@welt-studio-plugins
+/plugin install route-guard@welt-studio-plugins
 ```
 
 ## Prerequisites

@@ -1,0 +1,12 @@
+{
+  "name": "route-guard",
+  "displayName": "Route Guard",
+  "version": "0.1.0",
+  "description": "Acompanhador de implementação: o plano aprovado no plan mode vira uma rota de passos com escopo, critério de pronto e dependências. Hooks barram edição fora do escopo antes da escrita, só aceitam um passo como concluído se o critério passar num script, barram a parada com passo aberto e escalam para o usuário depois de três falhas.",
+  "author": {
+    "name": "Welt Studio Desenvolvimentos LTDA",
+    "email": "dev@weltstudio.com.br"
+  },
+  "keywords": ["hooks", "plan", "scope", "guardrails"],
+  "license": "MIT"
+}

@@ -42,6 +42,11 @@
     {
       "name": "code-review-legacy",
       "source": "./plugins/code-review-legacy"
+    },
+    {
+      "name": "route-guard",
+      "source": "./plugins/route-guard",
+      "description": "Acompanhador de implementação: o plano aprovado vira uma rota de passos com escopo, critério de pronto e dependências. Hooks barram edição fora do escopo antes da escrita, aceitam o passo só se o critério passar num script, barram a parada com passo aberto e escalam para o usuário depois de três falhas."
     }
   ]
 }
