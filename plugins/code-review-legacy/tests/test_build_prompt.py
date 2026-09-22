@@ -169,10 +169,11 @@ def script_path(module):
 
 
 class ReviewerAgentTest(unittest.TestCase):
-    """O reviewer é o `general-purpose` do Claude Code sem a diretriz que desencoraja delegar."""
+    """A base do fork é o `general-purpose` do Claude Code sem a diretriz que desencoraja delegar."""
 
-    def test_reviewer_agent_exists(self):
-        plugin, _, agent = level.REVIEWER_AGENT.partition(":")
+    def test_agent_referenced_by_skill_exists(self):
+        fields, _ = read_frontmatter(SKILL_MD)
+        plugin, _, agent = fields["agent"].partition(":")
         self.assertEqual(plugin, PLUGIN_NAME)
         agent_fields, body = read_frontmatter(os.path.join(PLUGIN_ROOT, "agents", agent + ".md"))
         self.assertEqual(agent_fields["name"], agent)
@@ -187,15 +188,12 @@ class ReviewerAgentTest(unittest.TestCase):
 class SkillFilesTest(unittest.TestCase):
     """A skill repete o nome do script no `allowed-tools` e no comando `!`; este teste é a trava de que batem."""
 
-    def test_single_inline_skill(self):
+    def test_single_forked_skill(self):
         self.assertEqual(os.listdir(SKILLS_DIR), [level.SKILL_NAME])
         fields, body = read_frontmatter(SKILL_MD)
         self.assertEqual(fields["name"], level.SKILL_NAME)
-        # Sem fork: no VS Code o fork roda em primeiro plano e termina antes dos finders voltarem.
-        # A skill só dispara o reviewer em background.
-        self.assertNotIn("context", fields)
-        self.assertNotIn("agent", fields)
-        # Sem `effort:` o reviewer herda o esforço da sessão, e `${CLAUDE_EFFORT}` é o fallback do nível.
+        self.assertEqual(fields["context"], "fork")
+        # Sem `effort:` o fork herda o esforço da sessão, e `${CLAUDE_EFFORT}` é o fallback do nível.
         self.assertNotIn("effort", fields)
         allowed = re.match(r"^Bash\((.*):\*\)$", fields["allowed-tools"])
         if allowed is None:
@@ -203,8 +201,8 @@ class SkillFilesTest(unittest.TestCase):
         prefix = allowed.group(1)
         self.assertTrue(prefix.endswith("/" + script_path(bp)))
         # O comando `!` precisa começar pelo prefixo liberado, senão a checagem de permissão aborta a skill.
-        self.assertEqual(body, "!`{} '${{CLAUDE_PLUGIN_DATA}}' '${{CLAUDE_EFFORT}}' '${{CLAUDE_SESSION_ID}}' "
-                               "'$ARGUMENTS'`".format(prefix))
+        self.assertEqual(body, "!`{} '${{CLAUDE_PLUGIN_DATA}}' '${{CLAUDE_EFFORT}}' '$ARGUMENTS'`".format(prefix))
+
 
 if __name__ == "__main__":
     unittest.main()

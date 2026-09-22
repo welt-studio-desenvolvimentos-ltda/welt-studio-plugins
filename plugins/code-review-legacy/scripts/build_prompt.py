@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
-"""Monta o prompt de revisão e a instrução que dispara o reviewer em background.
+"""Monta o prompt de revisão que a skill forkada vai executar.
 
 Porta de `ps()` do /code-review embutido (Claude Code 2.1.278), restrita às
 células do Sonnet 5 — as receitas com fan-out de subagentes em todos os níveis.
 O texto de cada trecho mora em `recipe/`; aqui só se decide o que entra.
 
-A receita vai para um arquivo, não para a sessão principal: ela recebe só a instrução
-de disparar o agente `reviewer` em background, que lê o arquivo e devolve o relatório final.
-
 Uso (via injeção `!` do SKILL.md):
-    build_prompt.py '<CLAUDE_PLUGIN_DATA>' '<CLAUDE_EFFORT>' '<CLAUDE_SESSION_ID>' '<argumentos crus do usuário>'
+    build_prompt.py '<CLAUDE_PLUGIN_DATA>' '<CLAUDE_EFFORT>' '<argumentos crus do usuário>'
 """
 
 import os
 import re
 import subprocess
 import sys
-import tempfile
-import time
 from collections import namedtuple
 
-from level import LEVELS, KNOWN_FLAGS, REVIEWER_AGENT, SKILL_NAME, clean_raw, notice, resolve, write_last_level
+from level import LEVELS, KNOWN_FLAGS, clean_raw, notice, resolve, write_last_level
 
 RECIPE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recipe")
 
@@ -201,68 +196,25 @@ def build(level, raw_args, host=None):
     ))
 
 
-PROMPTS_DIR = "prompts"
-# Um prompt só é lido pelo reviewer logo depois de escrito; um dia de folga cobre qualquer review.
-PROMPT_TTL = 24 * 3600
-SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-
-
-def write_prompt(data_dir, session_id, text):
-    """Grava o prompt num arquivo novo e apaga os de reviews antigos. Devolve o caminho."""
-    directory = os.path.join(data_dir or os.path.join(tempfile.gettempdir(), SKILL_NAME), PROMPTS_DIR)
-    os.makedirs(directory, exist_ok=True)
-    now = time.time()
-    for name in os.listdir(directory):
-        path = os.path.join(directory, name)
-        try:
-            if now - os.path.getmtime(path) > PROMPT_TTL:
-                os.unlink(path)
-        except OSError:
-            pass
-    prefix = (session_id if SESSION_ID.match(session_id or "") else "session") + "-"
-    fd, path = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".md")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    return path
-
-
-def launcher(level, prompt_path, args):
-    """O que a sessão principal recebe: disparar o reviewer em background e esperar o relatório."""
-    extras = [name for name, on in (("--fix", args.fix), ("--comment", args.comment)) if on]
-    what = "{} review{}".format(level, " with " + " and ".join(extras) if extras else "")
-    return (
-        "Launch the code review in the background now, with exactly one `Agent` call:\n"
-        "- subagent_type: `{agent}`\n"
-        "- description: `Code review ({level})`\n"
-        "- run_in_background: true\n"
-        "- prompt: `Read the file {path} with the Read tool and carry out the code review it describes, "
-        "exactly as written. Your final message is the report the user will see.`\n\n"
-        "Do not review, read the diff or open that file yourself. After launching, tell the user in one "
-        "short line that the {what} is running in the background, then end your turn. When the agent's "
-        "result arrives, relay its report to the user."
-    ).format(agent=REVIEWER_AGENT, level=level, path=prompt_path, what=what)
-
-
 def main(argv):
-    if len(argv) != 5:
-        print("Could not build the review prompt: expected plugin data dir, session effort, session id and "
-              "arguments. Do not review; tell the user the code-review-legacy skill is misconfigured.")
+    if len(argv) != 4:
+        print("Could not build the review prompt: expected plugin data dir, session effort and arguments. "
+              "Do not review; stop and tell the user the code-review-legacy skill is misconfigured.")
         return 0
     # Placeholder que o Claude Code não substituiu chega cru; tratar como ausente, não como caminho/valor.
     # Só nos valores de ambiente: os argumentos do usuário são texto livre.
-    data_dir, session_effort, session_id = (value if not value.startswith("${") else "" for value in argv[1:4])
-    route = resolve(argv[4], data_dir, session_effort)
+    data_dir, session_effort = (value if not value.startswith("${") else "" for value in argv[1:3])
+    route = resolve(argv[3], data_dir, session_effort)
     try:
         prompt = notice(route) + build(route.level, route.args)
-        prompt_path = write_prompt(data_dir, session_id, prompt)
-    except (PromptBuildError, OSError) as exc:
-        # Sem prompt válido não há revisão: a sessão relata a falha em vez de revisar com texto errado.
-        print("Could not build the review prompt: {}. Do not review; tell the user this.".format(exc))
+    except PromptBuildError as exc:
+        # Sem prompt válido não há revisão: o fork relata a falha em vez de revisar com texto errado.
+        print("Could not build the review prompt: {}. Do not review; stop and tell the user this.".format(exc))
         return 0
     # Como o `onUserTypedArgs()` do embutido: só um nível digitado vira o "último".
     if route.source == "explicit":
         write_last_level(data_dir, route.level)
-    sys.stdout.write(launcher(route.level, prompt_path, parse_args(route.args)))
+    sys.stdout.write(prompt)
     return 0
 
 

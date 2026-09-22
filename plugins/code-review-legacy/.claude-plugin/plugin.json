@@ -1,8 +1,8 @@
 {
   "name": "code-review-legacy",
   "displayName": "Code Review Legacy",
-  "version": "0.6.0",
-  "description": "As receitas do /code-review com fan-out de subagentes em todos os níveis (células Sonnet 5 do Claude Code 2.1.278), executadas por um agente em background sem o freio de delegação: prompt montado na hora, --fix e --comment só quando passados; a sessão principal fica livre e recebe só o relatório final, já com as correções.",
+  "version": "0.7.0",
+  "description": "As receitas do /code-review com fan-out de subagentes em todos os níveis (células Sonnet 5 do Claude Code 2.1.278), executadas pelo mesmo caminho de fork do embutido sobre um agente-base sem o freio de delegação; o fork espera os finders e devolve só o relatório final, já com as correções do --fix.",
   "author": {
     "name": "Welt Studio Desenvolvimentos LTDA",
     "email": "dev@weltstudio.com.br"

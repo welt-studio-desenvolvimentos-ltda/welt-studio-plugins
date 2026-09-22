@@ -1,9 +1,7 @@
 import os
-import re
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 from io import StringIO
 from unittest import mock
@@ -70,54 +68,17 @@ class ResolveTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    """`build_prompt.main`: resolve o nível, grava o último, escreve o prompt e devolve a instrução de disparo."""
+    """`build_prompt.main`: resolve o nível, grava o último e monta o prompt do fork."""
 
     def setUp(self):
         self.data_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.data_dir)
 
-    def launch(self, raw, effort="medium", data_dir=None, session_id="sess-1"):
-        """Saída da skill: o que a sessão principal recebe."""
-        with mock.patch("sys.stdout", new=StringIO()) as out, \
-                mock.patch.object(build_prompt, "origin_host", lambda: "github.com"), \
-                mock.patch("tempfile.gettempdir", lambda: self.data_dir):
-            build_prompt.main(["build_prompt.py", self.data_dir if data_dir is None else data_dir, effort,
-                               session_id, raw])
-        return out.getvalue()
-
-    def prompt_path(self, launch_text):
-        match = re.search(r"Read the file (\S+) with the Read tool", launch_text)
-        if match is None:
-            self.fail("launch text has no prompt file: " + launch_text)
-        return match.group(1)
-
     def run_main(self, raw, effort="medium", data_dir=None):
-        """O prompt que o reviewer vai ler."""
-        with open(self.prompt_path(self.launch(raw, effort, data_dir)), encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_launch_runs_reviewer_in_background(self):
-        text = self.launch("high --fix 42")
-        self.assertIn("subagent_type: `{}`".format(level.REVIEWER_AGENT), text)
-        self.assertIn("run_in_background: true", text)
-        self.assertIn("high review with --fix", text)
-        self.assertIn("Do not review", text)
-        # A receita não entra na sessão principal.
-        self.assertNotIn("Phase 1", text)
-        path = self.prompt_path(text)
-        self.assertTrue(path.startswith(os.path.join(self.data_dir, build_prompt.PROMPTS_DIR, "sess-1-")))
-
-    def test_old_prompts_are_pruned(self):
-        old = self.prompt_path(self.launch("low"))
-        stale = time.time() - build_prompt.PROMPT_TTL - 60
-        os.utime(old, (stale, stale))
-        fresh = self.prompt_path(self.launch("low"))
-        self.assertFalse(os.path.exists(old))
-        self.assertTrue(os.path.exists(fresh))
-
-    def test_bad_session_id_does_not_escape_prompts_dir(self):
-        path = self.prompt_path(self.launch("low", session_id="../../x"))
-        self.assertEqual(os.path.dirname(path), os.path.join(self.data_dir, build_prompt.PROMPTS_DIR))
+        with mock.patch("sys.stdout", new=StringIO()) as out, \
+                mock.patch.object(build_prompt, "origin_host", lambda: "github.com"):
+            build_prompt.main(["build_prompt.py", self.data_dir if data_dir is None else data_dir, effort, raw])
+        return out.getvalue()
 
     def test_only_explicit_level_is_remembered(self):
         self.run_main("--fix", effort="low")
@@ -153,10 +114,8 @@ class MainTest(unittest.TestCase):
         self.assertTrue(self.run_main("low").startswith("`low effort"))
 
     def test_unsubstituted_placeholders_are_ignored(self):
-        launch = self.launch("", effort="${CLAUDE_EFFORT}", data_dir="${CLAUDE_PLUGIN_DATA}",
-                             session_id="${CLAUDE_SESSION_ID}")
-        with open(self.prompt_path(launch), encoding="utf-8") as fh:
-            self.assertIn("`medium effort", fh.read())
+        text = self.run_main("", effort="${CLAUDE_EFFORT}", data_dir="${CLAUDE_PLUGIN_DATA}")
+        self.assertIn("`medium effort", text)
         self.assertFalse(os.path.exists("${CLAUDE_PLUGIN_DATA}"))
 
     def test_user_arguments_are_not_treated_as_placeholders(self):

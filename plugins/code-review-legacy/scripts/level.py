@@ -19,8 +19,6 @@ LEVELS = ("low", "medium", "high", "xhigh", "max")
 KNOWN_FLAGS = ("comment", "fix", "post", "no-post")
 
 SKILL_NAME = "code-review-legacy"
-# Agente que executa a receita em background. O Claude Code namespaceia agentes de plugin como `<plugin>:<nome>`.
-REVIEWER_AGENT = "code-review-legacy:reviewer"
 LAST_LEVEL_FILE = "last_level"
 
 # Porta de `cs`: token com cara de nível (3 primeiras letras de algum) que não é um nível válido.
@@ -91,7 +89,7 @@ def resolve(raw, data_dir, session_effort):
 
 
 def notice(route):
-    """Porta dos avisos de `bs()` na variante fork (`willRunAsFork`): quem avisa o usuário é o relatório do reviewer."""
+    """Porta dos avisos de `bs()` na variante fork (`willRunAsFork`): quem avisa o usuário é o relatório."""
     change_hint = "typing a level (for example `/{} high`) changes it".format(SKILL_NAME)
     tell = ("({} Open your report with one short line telling the user this, and that {}; "
             "that opening line reaches them with the findings.)\n\n")
