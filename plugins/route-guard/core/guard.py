@@ -4,6 +4,7 @@ Cada função recebe o JSON de entrada do hook e o diretório de dados do plugin
 hook deve emitir. Sem rota na sessão (ou rota encerrada), nada é emitido.
 """
 
+import locale
 import os
 import subprocess
 import time
@@ -211,13 +212,24 @@ def _check_project_path(absolute, kind, cwd, st, session):
 
 # --- TaskCompleted ----------------------------------------------------------------------------
 
+def decode_output(data, fallback=None):
+    """Saída de um critério em texto: UTF-8 quando válida; senão, o encoding do sistema.
+
+    No Windows as ferramentas escrevem no encoding do sistema (cp1252), não em UTF-8.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(fallback or locale.getpreferredencoding(False), errors="replace")
+
+
 def _run_criterion(command, root, timeout):
     try:
         proc = subprocess.run(command, shell=True, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              timeout=timeout, encoding="utf-8", errors="replace")
+                              timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, "timed out after {:.0f}s".format(timeout)
-    return proc.returncode == 0, "exit {}\n{}".format(proc.returncode, proc.stdout[-OUTPUT_TAIL:])
+    return proc.returncode == 0, "exit {}\n{}".format(proc.returncode, decode_output(proc.stdout)[-OUTPUT_TAIL:])
 
 
 def _first_failing_criterion(commands, root):

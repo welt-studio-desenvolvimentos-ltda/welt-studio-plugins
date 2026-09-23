@@ -482,8 +482,10 @@ class HookProcessTest(GuardTestCase):
 
     def test_non_ascii_on_cp1252_console(self):
         # No Windows os streams padrão são cp1252: entrada com acento e saída com `→`/acentos precisam passar.
+        # O comando escreve o acento por escape: a asserção só passa se a linha de saída chegar decodificada.
         self.activate([{"id": "1", "title": "Criação", "scope": ["src/**"],
-                        "done_when": ["python3 -c \"import sys; print('não passou'); sys.exit(1)\""],
+                        "done_when": ["python3 -c \"import sys; sys.stdout.buffer.write('n\\u00e3o passou'.encode('utf-8')); "
+                                      "sys.exit(1)\""],
                         "depends_on": []}])
         env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
         proc = subprocess.run([sys.executable, os.path.join(PLUGIN_ROOT, "hooks", "task_completed.py"), self.data],
@@ -491,6 +493,11 @@ class HookProcessTest(GuardTestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=60)
         self.assertEqual(proc.returncode, 2, proc.stdout.decode("utf-8", "replace"))
         self.assertIn("não passou", proc.stderr.decode("utf-8"))
+
+    def test_criterion_output_in_system_encoding(self):
+        # Ferramenta no Windows escreve cp1252: não é UTF-8 válido, cai no encoding do sistema.
+        self.assertEqual(guard.decode_output("não passou".encode("cp1252"), "cp1252"), "não passou")
+        self.assertEqual(guard.decode_output("não passou".encode("utf-8"), "cp1252"), "não passou")
 
     def test_fail_open_on_bad_json(self):
         proc = subprocess.run([sys.executable, os.path.join(PLUGIN_ROOT, "hooks", "pre_tool.py"), self.data],
