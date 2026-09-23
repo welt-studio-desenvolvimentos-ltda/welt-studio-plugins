@@ -9,7 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import commands  # noqa: E402
+from core import commands, hook_io  # noqa: E402
 
 if __name__ == "__main__":
+    hook_io.use_utf8_streams()
     sys.exit(commands.main(sys.argv))

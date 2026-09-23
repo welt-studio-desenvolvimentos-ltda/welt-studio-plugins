@@ -90,11 +90,11 @@ def recipe_medium_high(level):
         "surfaces **up to 6 candidate findings** with `file`, `line`, a one-line\n"
         "`summary`, and a concrete `failure_scenario`. {fallback}\n\n"
         "{per_angle}\n"
-        "{angles}\n{cleanup_shape}\n{pass_through}\n{verify}\n{output}"
+        "{angles}\n{cleanup_shape}\n{diff_scope}\n{pass_through}\n{verify}\n{output}"
     ).format(
         tag=tag, lead_in=lead_in, phase0=load("phase0_gather"), fallback=load("agent_fallback"),
         per_angle=one_agent_per_angle(CORRECTNESS_3 + CLEANUP), angles=fragments(CORRECTNESS_3 + CLEANUP),
-        cleanup_shape=load("cleanup_shape"),
+        cleanup_shape=load("cleanup_shape"), diff_scope=load("diff_scope"),
         pass_through=load("pass_through"), verify=verify, output=output(cap),
     )
 
@@ -113,11 +113,11 @@ def recipe_xhigh_max(level):
         "suppress another's — if two angles flag the same line for different reasons,\n"
         "record both. {fallback}\n\n"
         "{per_angle}\n"
-        "{angles}\n{cleanup_shape}\n{verify}\n{single_vote}\n{sweep}\n{output}"
+        "{angles}\n{cleanup_shape}\n{diff_scope}\n{verify}\n{single_vote}\n{sweep}\n{output}"
     ).format(
         level=level, intensity=intensity, phase0=load("phase0_gather"), fallback=load("agent_fallback"),
         per_angle=one_agent_per_angle(CORRECTNESS_5 + CLEANUP), angles=fragments(CORRECTNESS_5 + CLEANUP),
-        cleanup_shape=load("cleanup_shape"),
+        cleanup_shape=load("cleanup_shape"), diff_scope=load("diff_scope"),
         verify=load("verify_precision"), single_vote=load("recall_single_vote"),
         sweep=load("sweep"), output=output(15),
     )

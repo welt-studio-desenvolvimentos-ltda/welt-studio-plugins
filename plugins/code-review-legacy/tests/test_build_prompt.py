@@ -20,6 +20,7 @@ with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="
 FIX_MARKER = "## Applying fixes (--fix)"
 GITHUB_MARKER = "## Posting to GitHub (--comment)"
 GITLAB_MARKER = "## Posting to GitLab (--comment)"
+DIFF_SCOPE_MARKER = "## Diff scope"
 
 
 def build(level, raw="", host="github.com"):
@@ -124,6 +125,15 @@ class RecipeTest(unittest.TestCase):
         self.assertNotIn("## Phase 3", build("high"))
         self.assertIn("## Phase 3 — Sweep for gaps", build("xhigh"))
         self.assertIn("## Phase 3 — Sweep for gaps", build("max"))
+
+    def test_diff_scope_on_verified_levels(self):
+        # Desvio deliberado: sem a fronteira, achados anteriores ao diff passam no verify e ocupam o teto.
+        for level in ("medium", "high", "xhigh", "max"):
+            text = build(level)
+            self.assertEqual(text.count(DIFF_SCOPE_MARKER), 1, level)
+            self.assertLess(text.index(DIFF_SCOPE_MARKER), text.index("## Phase 2"), level)
+            self.assertLess(text.index(DIFF_SCOPE_MARKER), text.index("## Output"), level)
+        self.assertNotIn(DIFF_SCOPE_MARKER, build("low"))
 
     def test_max_intensity(self):
         self.assertIn("at maximum effort", build("max"))

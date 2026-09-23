@@ -480,6 +480,18 @@ class HookProcessTest(GuardTestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertIn("guard skipped", json.loads(proc.stdout)["systemMessage"])
 
+    def test_non_ascii_on_cp1252_console(self):
+        # No Windows os streams padrão são cp1252: entrada com acento e saída com `→`/acentos precisam passar.
+        self.activate([{"id": "1", "title": "Criação", "scope": ["src/**"],
+                        "done_when": ["python3 -c \"import sys; print('não passou'); sys.exit(1)\""],
+                        "depends_on": []}])
+        env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
+        proc = subprocess.run([sys.executable, os.path.join(PLUGIN_ROOT, "hooks", "task_completed.py"), self.data],
+                              input=json.dumps(self.inp(task_subject="[R1] Criação"), ensure_ascii=False).encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stdout.decode("utf-8", "replace"))
+        self.assertIn("não passou", proc.stderr.decode("utf-8"))
+
     def test_fail_open_on_bad_json(self):
         proc = subprocess.run([sys.executable, os.path.join(PLUGIN_ROOT, "hooks", "pre_tool.py"), self.data],
                               input="not json", stdout=subprocess.PIPE, encoding="utf-8", timeout=30)

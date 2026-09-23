@@ -48,14 +48,29 @@ O prompt é montado na hora por `scripts/build_prompt.py`, injetado pelo `` !`�
 - `--comment` usa GitLab (`glab`) quando o alvo é uma URL de MR, é `!N` ou o `origin` é GitLab; nos outros casos usa GitHub.
 - `--post` só vale para o ultra: é ignorado, com um aviso de uma linha.
 
-O texto de cada trecho fica em `recipe/`, copiado literalmente do binário, com uma exceção (abaixo). Quem decide o que entra é o script.
+O texto de cada trecho fica em `recipe/`, copiado literalmente do binário, com duas exceções (abaixo): `one_agent_per_angle.md` e `diff_scope.md`. Quem decide o que entra é o script.
 
 ## Desvios deliberados do binário
 
 - **Um agente por ângulo** (`recipe/one_agent_per_angle.md`): "Run 8 independent finder angles via the `Agent` tool" pede 8 *ângulos*, não 8 agentes, e o modelo agrupa. Medido no mesmo diff: 8 finders numa execução via `claude -p`, ~6 na CLI interativa, 3 no VS Code. A frase extra, logo após o parágrafo da Phase 1, manda exatamente um `Agent` `general-purpose` por ângulo (8 em medium/high, 10 em xhigh/max).
+- **Fronteira do diff** (`recipe/diff_scope.md`, de medium a max): no embutido, o Reuse lê o código vizinho e o Altitude não tem limite de diff. Com isso, surgem achados sobre código anterior ao diff (duplicação antiga, questões de design fora da fatia). O `verify_recall` do high não tem critério de REFUTED para esses casos, então eles passavam, ocupavam o teto e só caíam no `--fix`. Agora:
+  - Os ângulos de cleanup, altitude e conventions só citam linhas `+` do diff. Os de correção mantêm a regra do upstream (vale a função tocada), mais o call site que o diff quebra. Código morto deixado pelo diff também conta.
+  - O verificador rotula cada candidato como `diff` ou `pre_existing`, conferindo a linha citada contra o diff.
+  - O `pre_existing` sai do JSON, do teto e do `--fix`, e é anotado pelo próprio fork. Se as skills `tech-debt-tracker`, `parking-lot` ou `roadmap-tracker` estiverem instaladas, o fork as usa, pulando o que já estiver registrado. Sem elas, lista os itens depois do JSON. O plugin não copia o formato das entradas.
+  - O `low` fica de fora: não tem verificação e já é restrito ao hunk.
 - **Sem a dica de finders**: o `gs()` do embutido acrescenta "Spawn about ⌈linhas/150⌉ finder subagents (min 2, max 8) — … rather than using a fixed large fleet", que contradiz a frase acima. Ela só existe nas células do Sonnet 5; foi removida.
 - **Agente-base `reviewer`** (seção acima).
 - **Subagentes em primeiro plano** (`recipe/one_agent_per_angle.md`): o fork dispara finders e verifiers com `run_in_background: false`, para receber todos os resultados no mesmo turno (seção "Como roda").
+
+## Qual nível usar
+
+medium e high custam o mesmo fan-out: 8 finders mais um verificador por candidato. A diferença está no verificador. O de medium exige nomear o gatilho. O de high mantém o achado na dúvida e deixa passar mais falsos positivos.
+
+- **Por fatia ou commit**: `medium`.
+- **Antes do merge ou de um marco**: `high` ou `xhigh`, uma vez.
+- **Depois de um `--fix`**: `low`, sem subagentes. Um high sobre as próprias correções revisa de novo o que acabou de ser revisado.
+
+O nível digitado fica memorizado, então basta digitar `medium` uma vez.
 
 ## Limitações conhecidas
 
