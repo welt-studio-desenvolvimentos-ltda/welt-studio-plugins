@@ -1,2 +1,0 @@
-This is recall mode — a single non-REFUTED vote carries the finding. Do NOT
-drop on uncertainty.

@@ -1,1 +1,0 @@
-If the `Agent` tool is not available in your current tool set, do not error — perform each angle (and each verification) yourself, sequentially, in this context.
