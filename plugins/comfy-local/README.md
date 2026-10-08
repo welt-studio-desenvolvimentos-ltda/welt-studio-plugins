@@ -38,12 +38,13 @@ servidor MCP os expõe.
 
 ## Instalação
 
-No marketplace:
+Num terminal, no prompt do Claude Code:
 
 ```
-/plugin marketplace add welt-studio-desenvolvimentos-ltda/welt-studio-plugins
-/plugin install comfy-local@welt-studio-plugins
+/plugin install comfy-local --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
 ```
+
+Na primeira vez ele pergunta se adiciona o marketplace (`y`) e depois o escopo (Enter escolhe o de usuário).
 
 O plugin instala desabilitado de propósito, porque conecta a um serviço
 externo. Habilite e responda as três perguntas de configuração:

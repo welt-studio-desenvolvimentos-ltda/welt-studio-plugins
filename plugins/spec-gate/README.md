@@ -8,12 +8,13 @@ Você descreve o que quer. O Claude escreve a spec te entrevistando, escreve os 
 
 ## Instalação
 
-Dentro do Claude Code:
+Num terminal, no prompt do Claude Code:
 
 ```
-/plugin marketplace add welt-studio/welt-studio-plugins
-/plugin install spec-gate@welt-studio-plugins
+/plugin install spec-gate --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
 ```
+
+Na primeira vez ele pergunta se adiciona o marketplace (`y`) e depois o escopo (Enter escolhe o de usuário).
 
 Precisa de Python 3 no PATH. Funciona em Linux, macOS e WSL2.
 

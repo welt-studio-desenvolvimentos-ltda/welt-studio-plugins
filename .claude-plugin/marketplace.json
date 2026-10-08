@@ -33,6 +33,11 @@
       "name": "comfy-local",
       "source": "./plugins/comfy-local",
       "description": "Dirige um ComfyUI local nos dois sentidos: lê o grafo que está aberto no canvas, edita node a node — adiciona, liga e remove — e espelha cada edição de volta na tela pela extensão que vem junto, sem exigir que o usuário salve antes. A aba confirma o que fez, então o agente sabe se a edição chegou, foi recusada por o canvas ter mudado, ou ficou sem confirmação. Mais introspecção da instalação viva, execução, diagnóstico de job e VRAM, biblioteca de workflows e coleta de saídas. Instala desabilitado; exige comfy-cli 1.20+."
+    },
+    {
+      "name": "preflight",
+      "source": "./plugins/preflight",
+      "description": "Pega na escrita o que o /code-review pegaria depois: bloqueia edição de arquivo via Bash dentro de qualquer repositório git, roda o pre-commit do repo a cada Edit/Write e no fim do turno, aponta sobras de identificadores removidos e injeta no system prompt os findings recorrentes do projeto."
     }
   ]
 }

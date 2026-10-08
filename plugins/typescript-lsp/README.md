@@ -30,12 +30,13 @@ npm install -g typescript-language-server typescript
 
 ## Installation
 
-Via marketplace:
+At the prompt of a terminal Claude Code session:
 
-```bash
-/plugin marketplace add welt-studio/welt-studio-plugins
-/plugin install typescript-lsp@welt-studio-plugins
 ```
+/plugin install typescript-lsp --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+```
+
+The first time, it asks to add the marketplace (`y`), then for a scope (Enter picks the user scope).
 
 Or directly:
 

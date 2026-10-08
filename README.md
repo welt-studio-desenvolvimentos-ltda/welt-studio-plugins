@@ -11,28 +11,24 @@ A collection of Claude Code plugins for enhanced development experience.
 | `hookify` | 0.1.4 | User-configurable hooks from Markdown rule files (patched fork) |
 | `spec-gate` | 0.3.0 | Spec-driven flow gated by the product owner: six named phases and six human decision gates |
 | `comfy-local` | 0.2.0 | Drives a local ComfyUI over MCP: introspection, workflow building, execution, job and VRAM diagnostics, and output collection |
+| `preflight` | 0.1.0 | Catches at write time what `/code-review` would catch later: blocks file edits through Bash inside any git repository, runs the repo pre-commit on each edit and at end of turn, flags leftovers of removed identifiers, and feeds the project's recurring findings into the system prompt |
 
 ## Installation
 
-### Add the Marketplace
+One line per plugin, typed at the prompt of a terminal Claude Code session:
 
-```bash
-# From GitHub
-/plugin marketplace add welt-studio-desenvolvimentos-ltda/welt-studio-plugins
-
-# Or from a local clone
-/plugin marketplace add /path/to/welt-studio-plugins
+```
+/plugin install typescript-lsp --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+/plugin install python-lsp --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+/plugin install hookify --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+/plugin install spec-gate --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+/plugin install comfy-local --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
+/plugin install preflight --marketplace welt-studio-desenvolvimentos-ltda/welt-studio-plugins
 ```
 
-### Install Plugins
-
-```bash
-/plugin install typescript-lsp@welt-studio-plugins
-/plugin install python-lsp@welt-studio-plugins
-/plugin install hookify@welt-studio-plugins
-/plugin install spec-gate@welt-studio-plugins
-/plugin install comfy-local@welt-studio-plugins
-```
+The first one asks to add the marketplace (`y`), then for a scope (Enter picks the user scope,
+which applies to every session). From a local clone, pass its path instead:
+`--marketplace /path/to/welt-studio-plugins`.
 
 ## Prerequisites
 

@@ -1,0 +1,23 @@
+{
+  "name": "preflight",
+  "version": "0.1.0",
+  "description": "Pega na escrita o que o /code-review pegaria depois: bloqueia edição de arquivo via Bash dentro de qualquer repositório git, roda o pre-commit do repo a cada Edit/Write e no fim do turno, aponta sobras de identificadores removidos e injeta no system prompt os findings recorrentes do projeto.",
+  "author": {
+    "name": "Welt Studio"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "allowBashWrites": {
+      "type": "boolean",
+      "title": "Allow Bash file writes",
+      "description": "Disable the guard that denies writing repo files through Bash (sed -i, heredocs, redirects).",
+      "default": false
+    },
+    "precommitTimeoutMs": {
+      "type": "number",
+      "title": "pre-commit timeout (ms)",
+      "description": "How long one pre-commit run may take before it is abandoned.",
+      "default": 120000
+    }
+  }
+}

@@ -14,3 +14,6 @@ node_modules/
 
 # Venv que o comfy-local monta fora do Claude Code (sem CLAUDE_PLUGIN_DATA)
 .local-data/
+
+# Tipos que o Claude Code gera ao carregar um mod (API, tools, MCP e o tsconfig base)
+plugins/*/.claude-plugin/types/
