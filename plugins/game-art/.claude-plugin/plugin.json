@@ -1,0 +1,23 @@
+{
+  "name": "game-art",
+  "version": "0.2.0",
+  "description": "Gera assets de jogo (sprite, ícone, textura, fundo, UI, concept) pelo gerador de imagens do Codex CLI, limpa o fundo e salva na pasta certa do projeto Godot, Unity ou Unreal.",
+  "author": {
+    "name": "Welt Studio"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "codexModel": {
+      "type": "string",
+      "title": "Codex model",
+      "description": "Model passed to `codex exec -m`. Empty uses the model from ~/.codex/config.toml.",
+      "default": ""
+    },
+    "generationTimeoutMs": {
+      "type": "number",
+      "title": "Generation timeout (ms)",
+      "description": "How long one Codex generation may take before it is abandoned (at most 600000).",
+      "default": 300000
+    }
+  }
+}

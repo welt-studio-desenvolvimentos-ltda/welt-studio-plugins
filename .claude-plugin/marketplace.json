@@ -38,6 +38,11 @@
       "name": "preflight",
       "source": "./plugins/preflight",
       "description": "Pega na escrita o que o /code-review pegaria depois: bloqueia edição de arquivo via Bash dentro de qualquer repositório git, roda o pre-commit do repo a cada Edit/Write e no fim do turno, aponta sobras de identificadores removidos e injeta no system prompt os findings recorrentes do projeto."
+    },
+    {
+      "name": "game-art",
+      "source": "./plugins/game-art",
+      "description": "Gera assets de jogo (sprite, ícone, textura, fundo, UI, concept) pelo gerador de imagens do Codex CLI, limpa o fundo e salva na pasta certa do projeto Godot, Unity ou Unreal."
     }
   ]
 }
