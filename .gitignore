@@ -1,7 +1,7 @@
 .claude/
 CLAUDE.md
 
-# Artefatos Python (hooks do spec-gate/hookify rodam via python3)
+# Artefatos Python (hooks do spec-gate rodam via python3; o script de pixels do game-art via uv)
 __pycache__/
 *.py[cod]
 

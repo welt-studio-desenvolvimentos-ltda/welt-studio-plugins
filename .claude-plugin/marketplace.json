@@ -20,11 +20,6 @@
       "description": "Python Language Server integration (Pyright)"
     },
     {
-      "name": "hookify",
-      "source": "./plugins/hookify",
-      "description": "User-configurable hooks from Markdown rule files. Patched: stderr+exit 2 for blocking, read event type, global rules, .claude/hookify/ subdir with .local/.global suffixes."
-    },
-    {
       "name": "spec-gate",
       "source": "./plugins/spec-gate",
       "description": "Fluxo spec-driven gateado pelo PO: comando /spec-gate auto-orientado, seis fases por nome e seis gates de decisão humana (backlog, testes, aceite, ambiguidade, RED, emenda) sobre os gates mecânicos de black-box, rastreabilidade requisito→teste, prova de RED, teto de tentativas, regressão e operações destrutivas."
